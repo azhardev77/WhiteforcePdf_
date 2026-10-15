@@ -189,4 +189,112 @@ class PdfRedactionServiceTest {
             assertThat(extractedText).contains("CORRECTED TEXT");
         }
     }
+
+    @Test
+    @DisplayName("shouldWrapLongTextWithoutHorizontalOverflow: Wrap long sentence without horizontal overflow in small bbox")
+    void shouldWrapLongTextWithoutHorizontalOverflow() throws IOException {
+        byte[] originalPdf = createTestPdf("Short original line");
+
+        // Small bbox: width=80.0, height=15.0
+        double[] bbox = new double[]{50.0, 85.0, 80.0, 15.0};
+        Style style = Style.of("Helvetica", 11.0, false, false, "#000000");
+
+        String longSentence = "This is a comprehensive and very long text sentence containing more than thirty to forty English words without any manual newline characters designed specifically to test the automatic word wrapping engine of the PDF redaction service";
+
+        TextRedactionEdit edit = new TextRedactionEdit(
+                1,
+                bbox,
+                "Short original line",
+                longSentence,
+                style,
+                "#FFFFFF"
+        );
+
+        byte[] modifiedPdf = pdfRedactionService.redactAndReplace(originalPdf, List.of(edit));
+        assertThat(modifiedPdf).isNotNull();
+        assertThat(modifiedPdf.length).isGreaterThan(0);
+
+        try (PDDocument doc = Loader.loadPDF(modifiedPdf)) {
+            assertThat(doc.getNumberOfPages()).isEqualTo(1);
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extracted = stripper.getText(doc);
+
+            assertThat(extracted).contains("comprehensive and very long text sentence");
+            assertThat(extracted).contains("automatic word wrapping engine");
+            assertThat(extracted).contains("PDF redaction service");
+        }
+    }
+
+    @Test
+    @DisplayName("shouldShiftLowerEditsDownWhenUpperTextExpands: Lower edits shift down when upper edit text expands into multiple lines")
+    void shouldShiftLowerEditsDownWhenUpperTextExpands() throws IOException {
+        // Create PDF with two lines
+        byte[] originalPdf;
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            doc.addPage(page);
+
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12.0f);
+                // Upper text: y=740 from bottom (~100 from top)
+                cs.newLineAtOffset(50.0f, 740.0f);
+                cs.showText("First upper text line");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12.0f);
+                // Lower text: y=720 from bottom (~120 from top)
+                cs.newLineAtOffset(50.0f, 720.0f);
+                cs.showText("Second lower text line");
+                cs.endText();
+            }
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            doc.save(baos);
+            originalPdf = baos.toByteArray();
+        }
+
+        // Upper edit at Y=100 with long multi-line text
+        double[] upperBbox = new double[]{50.0, 100.0, 100.0, 15.0};
+        String longUpperText = "The quick brown fox jumps over the lazy dog repeatedly until multiple lines are created requiring vertical expansion and content shift.";
+        TextRedactionEdit upperEdit = new TextRedactionEdit(
+                1,
+                upperBbox,
+                "First upper text line",
+                longUpperText,
+                Style.of("Helvetica", 11.0, false, false, "#000000"),
+                "#FFFFFF"
+        );
+
+        // Lower edit at Y=120
+        double[] lowerBbox = new double[]{50.0, 120.0, 120.0, 15.0};
+        String lowerText = "Lower section content that must not be overlapped";
+        TextRedactionEdit lowerEdit = new TextRedactionEdit(
+                1,
+                lowerBbox,
+                "Second lower text line",
+                lowerText,
+                Style.of("Helvetica", 11.0, false, false, "#000000"),
+                "#FFFFFF"
+        );
+
+        byte[] modifiedPdf = pdfRedactionService.redactAndReplace(originalPdf, List.of(upperEdit, lowerEdit));
+        assertThat(modifiedPdf).isNotNull();
+        assertThat(modifiedPdf.length).isGreaterThan(0);
+
+        try (PDDocument doc = Loader.loadPDF(modifiedPdf)) {
+            assertThat(doc.getNumberOfPages()).isEqualTo(1);
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extracted = stripper.getText(doc);
+
+            assertThat(extracted).contains("quick brown fox jumps");
+            assertThat(extracted).contains("Lower section content that must not be overlapped");
+
+            int upperIndex = extracted.indexOf("quick brown fox");
+            int lowerIndex = extracted.indexOf("Lower section content");
+            assertThat(upperIndex).isGreaterThanOrEqualTo(0);
+            assertThat(lowerIndex).isGreaterThan(upperIndex);
+        }
+    }
 }

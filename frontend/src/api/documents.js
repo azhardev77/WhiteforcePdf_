@@ -37,7 +37,10 @@ export async function extractSample(filename) {
  */
 export async function fetchRawSamplePdf(filename) {
   const response = await api.get(`/api/documents/raw-sample?filename=${encodeURIComponent(filename)}`, {
-    responseType: 'arraybuffer'
+    responseType: 'arraybuffer',
+    headers: {
+      'Accept': 'application/pdf, */*'
+    }
   });
   return response.data;
 }

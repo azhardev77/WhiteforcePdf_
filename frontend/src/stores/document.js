@@ -145,6 +145,15 @@ export const useDocumentStore = defineStore('document', {
     },
 
     /**
+     * Sets or synchronizes the full list of redaction edits.
+     *
+     * @param {Array<Object>} newEdits - Updated list of edits
+     */
+    setEdits(newEdits) {
+      this.edits = Array.isArray(newEdits) ? [...newEdits] : [];
+    },
+
+    /**
      * Removes an existing edit by ID (reverts the element back to original state).
      *
      * @param {string} id - Bounding box or line item ID

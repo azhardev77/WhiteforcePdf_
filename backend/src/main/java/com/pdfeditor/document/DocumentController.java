@@ -57,14 +57,17 @@ public class DocumentController {
         } catch (InvalidPathException ignored) {
         }
 
-        // If not found, try under sample-pdfs/
+        // If not found, try under sample-pdfs/ or ../sample-pdfs/
         if (resolvedPath == null) {
-            try {
-                Path samplePath = Paths.get("sample-pdfs", filename);
-                if (Files.exists(samplePath) && Files.isRegularFile(samplePath)) {
-                    resolvedPath = samplePath;
+            Path[] candidates = new Path[] {
+                Paths.get("sample-pdfs", filename),
+                Paths.get("..", "sample-pdfs", filename)
+            };
+            for (Path candidate : candidates) {
+                if (Files.exists(candidate) && Files.isRegularFile(candidate)) {
+                    resolvedPath = candidate;
+                    break;
                 }
-            } catch (InvalidPathException ignored) {
             }
         }
 
@@ -76,7 +79,7 @@ public class DocumentController {
         return ResponseEntity.ok(documentModel);
     }
 
-    @org.springframework.web.bind.annotation.GetMapping(value = "/raw-sample", produces = MediaType.APPLICATION_PDF_VALUE)
+    @org.springframework.web.bind.annotation.GetMapping("/raw-sample")
     public ResponseEntity<byte[]> getRawSample(@RequestParam("filename") String filename) throws IOException {
         if (filename == null || filename.isBlank()) {
             return ResponseEntity.badRequest().build();
@@ -92,12 +95,15 @@ public class DocumentController {
         }
 
         if (resolvedPath == null) {
-            try {
-                Path samplePath = Paths.get("sample-pdfs", filename);
-                if (Files.exists(samplePath) && Files.isRegularFile(samplePath)) {
-                    resolvedPath = samplePath;
+            Path[] candidates = new Path[] {
+                Paths.get("sample-pdfs", filename),
+                Paths.get("..", "sample-pdfs", filename)
+            };
+            for (Path candidate : candidates) {
+                if (Files.exists(candidate) && Files.isRegularFile(candidate)) {
+                    resolvedPath = candidate;
+                    break;
                 }
-            } catch (InvalidPathException ignored) {
             }
         }
 

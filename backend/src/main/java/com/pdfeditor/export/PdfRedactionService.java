@@ -9,12 +9,17 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
+import org.apache.pdfbox.pdmodel.graphics.image.LosslessFactory;
+import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
+import org.apache.pdfbox.rendering.PDFRenderer;
 import org.springframework.stereotype.Service;
 
 import java.awt.Color;
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,17 +27,19 @@ import java.util.Map;
 @Service
 public class PdfRedactionService {
 
+    private static final float RIGHT_PAGE_MARGIN = 36.0f; // Right margin (0.5 inch)
+    private static final float LINE_HEIGHT_FACTOR = 1.20f;
+
     public byte[] redactAndReplace(byte[] originalPdfBytes, List<TextRedactionEdit> edits) throws IOException {
         if (originalPdfBytes == null || originalPdfBytes.length == 0) {
             throw new IllegalArgumentException("Original PDF bytes cannot be empty");
         }
 
         if (edits == null || edits.isEmpty()) {
-            return originalPdfBytes; // No edits to apply
+            return originalPdfBytes;
         }
 
         try (PDDocument doc = Loader.loadPDF(originalPdfBytes)) {
-            // Group edits by pageNumber
             Map<Integer, List<TextRedactionEdit>> editsByPage = new HashMap<>();
             for (TextRedactionEdit edit : edits) {
                 if (edit == null || edit.getBbox() == null || edit.getBbox().length < 4) {
@@ -50,7 +57,6 @@ public class PdfRedactionService {
 
                 PDPage page = doc.getPage(pageNumber - 1);
                 PDRectangle cropBox = page.getCropBox() != null ? page.getCropBox() : page.getMediaBox();
-                PDRectangle mediaBox = page.getMediaBox() != null ? page.getMediaBox() : cropBox;
                 float originX = cropBox.getLowerLeftX();
                 float originY = cropBox.getLowerLeftY();
                 float pageW = cropBox.getWidth();
@@ -58,69 +64,115 @@ public class PdfRedactionService {
 
                 List<TextRedactionEdit> pageEdits = entry.getValue();
 
-                // 1. Cover edited areas with background color (Redaction pass)
-                for (TextRedactionEdit edit : pageEdits) {
-                    if (edit.isTransparentBackground()) {
-                        // Skip whiteout redaction when transparentBackground is true (e.g. overprinting on dots/underlines)
-                        continue;
-                    }
+                // Edits ko top-to-bottom (Y coordinate ke hisaab se) sort karein taaki shift
+                // sahi kaam kare
+                pageEdits.sort(Comparator.comparingDouble(e -> {
+                    double[] b = toUnrotatedPdfCoords(e.getBbox(), e.getPageRotation(), pageW, pageH);
+                    return b[1];
+                }));
 
+                // Cumulative vertical shift track karne ke liye
+                float cumulativeDeltaY = 0.0f;
+
+                for (TextRedactionEdit edit : pageEdits) {
                     double[] bbox = edit.getBbox();
-                    // Inverse-transform viewport bbox → PDF coordinate space
                     double[] pdfBbox = toUnrotatedPdfCoords(bbox, edit.getPageRotation(), pageW, pageH);
 
-                    float pad = 0.5f;
-                    float rectX = originX + (float) pdfBbox[0] - pad;
-                    float rectW = (float) pdfBbox[2] + (pad * 2f);
-                    float rectH = (float) pdfBbox[3] + (pad * 2f);
-                    float rectY = originY + (pageH - (float) pdfBbox[1] - (float) pdfBbox[3]) - pad;
-
-                    try (PDPageContentStream cs = new PDPageContentStream(
-                            doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
-                        Color bgColor = parseColor(edit.getBackgroundColor(), Color.WHITE);
-                        cs.setNonStrokingColor(bgColor);
-                        cs.addRect(rectX, rectY, rectW, rectH);
-                        cs.fill();
-                    }
-                }
-
-                // 2. Draw replacement text at exact location (Text replacement pass)
-                for (TextRedactionEdit edit : pageEdits) {
-                    String newText = edit.getNewText();
-                    if (newText == null || newText.isEmpty()) {
-                        continue;
-                    }
-
-                    double[] bbox = edit.getBbox();
-                    // Inverse-transform viewport bbox → PDF coordinate space
-                    double[] pdfBbox = toUnrotatedPdfCoords(bbox, edit.getPageRotation(), pageW, pageH);
+                    float boxX = (float) pdfBbox[0];
+                    // Agar upar ke kisi edit ne page shift kiya hai, toh is edit ka Y bhi neeche
+                    // shift hoga
+                    float boxY = (float) pdfBbox[1] + cumulativeDeltaY;
+                    float boxW = (float) pdfBbox[2];
+                    float boxH = (float) pdfBbox[3];
 
                     Style style = edit.getStyle();
                     boolean bold = style != null && style.bold();
                     boolean italic = style != null && style.italic();
                     float fontSize = (style != null && style.fontSize() > 0) ? (float) style.fontSize() : 11.0f;
                     Color textColor = parseColor(style != null ? style.color() : "#000000", Color.BLACK);
-
                     PDFont font = selectFont(bold, italic);
+                    float lineHeight = fontSize * LINE_HEIGHT_FACTOR;
 
-                    String[] lines = newText.split("\r?\n");
-                    float lineHeight = fontSize * 1.15f;
+                    // Wrapping ke liye maximum width:
+                    // Agar text original box mein nahi aata, toh page ke right margin tak wrap hone
+                    // ki jagah dein
+                    float maxAllowedWidth = Math.max(boxW, pageW - boxX - RIGHT_PAGE_MARGIN);
 
-                    try (PDPageContentStream cs = new PDPageContentStream(
-                            doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
-                        for (int i = 0; i < lines.length; i++) {
-                            String lineText = sanitizeForWinAnsi(lines[i]);
-                            if (lineText.isEmpty()) continue;
+                    String newText = edit.getNewText();
+                    List<String> wrappedLines = wrapTextToWidth(newText, font, fontSize, maxAllowedWidth);
 
-                            float textX = originX + (float) pdfBbox[0];
-                            float baselineY = originY + (pageH - (float) pdfBbox[1] - (fontSize * 0.82f)) - (i * lineHeight);
+                    List<String> origLines = (edit.getOriginalText() != null && !edit.getOriginalText().isEmpty())
+                            ? wrapTextToWidth(edit.getOriginalText(), font, fontSize, maxAllowedWidth)
+                            : List.of();
+                    float effectiveLineHeight = (origLines.size() > 1 && boxH > 0)
+                            ? Math.max(lineHeight, boxH / origLines.size())
+                            : lineHeight;
 
-                            cs.beginText();
-                            cs.setFont(font, fontSize);
-                            cs.setNonStrokingColor(textColor);
-                            cs.newLineAtOffset(textX, baselineY);
-                            cs.showText(lineText);
-                            cs.endText();
+                    float effectiveBoxH = boxH > 0 ? boxH : effectiveLineHeight;
+                    float requiredHeight = wrappedLines.size() * effectiveLineHeight;
+                    float extraHeightNeeded = (requiredHeight > effectiveBoxH) ? (requiredHeight - effectiveBoxH) : 0.0f;
+
+                    // Step 1: Pehle original text ko white/background box se मिटाएं (Redact)
+                    // Fix 2: Exact text box height to strictly preserve underlines and border vectors directly below
+                    if (!edit.isTransparentBackground()) {
+                        float padX = 0.5f;
+                        float rectX = originX + boxX - padX;
+                        float rectW = boxW + (padX * 2f);
+                        float rectY = originY + (pageH - boxY - boxH);
+                        float rectH = boxH;
+
+                        try (PDPageContentStream cs = new PDPageContentStream(
+                                doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
+                            Color bgColor = parseColor(edit.getBackgroundColor(), Color.WHITE);
+                            cs.setNonStrokingColor(bgColor);
+                            cs.addRect(rectX, rectY, rectW, rectH);
+                            cs.fill();
+                        }
+                    } else if (edit.getOriginalText() != null && edit.getOriginalText().matches("^[\\s,.;:\\-_–—]+$") && !edit.getOriginalText().trim().isEmpty()) {
+                        // For blank lines with trailing comma/punctuation, only whiteout the tiny ~10px area of the punctuation itself at the right end
+                        // so the underlying horizontal black line is NOT erased, but the original comma is covered
+                        float punctW = Math.min(12.0f, boxW);
+                        float punctX = originX + boxX + boxW - punctW;
+                        float rectY = originY + (pageH - boxY - boxH);
+                        float rectH = boxH;
+
+                        try (PDPageContentStream cs = new PDPageContentStream(
+                                doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
+                            Color bgColor = parseColor(edit.getBackgroundColor(), Color.WHITE);
+                            cs.setNonStrokingColor(bgColor);
+                            cs.addRect(punctX, rectY, punctW, rectH);
+                            cs.fill();
+                        }
+                    }
+
+                    // Step 2: Agar naya text zyada lines le raha hai, toh iske neeche ke poore page
+                    // content ko shift karein
+                    if (extraHeightNeeded > 1.0f) {
+                        float splitFromTopY = boxY + effectiveBoxH + 1.0f;
+                        shiftPageContentBelow(doc, pageNumber - 1, page, splitFromTopY, extraHeightNeeded,
+                                parseColor(edit.getBackgroundColor(), Color.WHITE));
+                        cumulativeDeltaY += extraHeightNeeded;
+                    }
+
+                    // Step 3: Naya wrapped text line-by-line print karein
+                    if (!wrappedLines.isEmpty()) {
+                        try (PDPageContentStream cs = new PDPageContentStream(
+                                doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
+                            for (int i = 0; i < wrappedLines.size(); i++) {
+                                String lineText = wrappedLines.get(i);
+                                if (lineText.isEmpty())
+                                    continue;
+
+                                float textX = originX + boxX;
+                                float baselineY = originY + (pageH - boxY - (fontSize * 0.82f)) - (i * effectiveLineHeight);
+
+                                cs.beginText();
+                                cs.setFont(font, fontSize);
+                                cs.setNonStrokingColor(textColor);
+                                cs.newLineAtOffset(textX, baselineY);
+                                cs.showText(lineText);
+                                cs.endText();
+                            }
                         }
                     }
                 }
@@ -132,67 +184,156 @@ public class PdfRedactionService {
         }
     }
 
+    private float safeGetStringWidth(PDFont font, String text, float fontSize) {
+        if (text == null || text.isEmpty()) {
+            return 0.0f;
+        }
+        try {
+            return (font.getStringWidth(text) / 1000.0f) * fontSize;
+        } catch (Exception e) {
+            return text.length() * fontSize * 0.5f;
+        }
+    }
+
     /**
-     * Inverse-transforms a bounding box from rotated-viewport space back to un-rotated PDF space.
-     *
-     * <p>PDF.js {@code page.getViewport({ rotation })} applies a rotation transform so that
-     * the visible content is always "right-side up" in the canvas. The bounding boxes stored
-     * in the DocumentModel (and sent from the frontend after editing) are in PDF-extraction
-     * space (top-left origin, un-rotated). However when the user actively rotates a page via
-     * the UI, the bbox sent with the edit has already been mapped through
-     * {@code viewport.convertToViewportPoint()}, which means it lives in viewport-space.
-     * This helper reverses that mapping for the four cardinal rotations so that the backend
-     * can paint the replacement text/rect at the correct PDF-space location.
-     *
-     * @param bbox         [x, y, w, h] in viewport/screen space (top-left origin)
-     * @param rotation     effective page rotation in degrees (0, 90, 180, 270)
-     * @param pageWidth    un-rotated PDF page width in points
-     * @param pageHeight   un-rotated PDF page height in points
-     * @return             [x, y, w, h] in un-rotated PDF space (top-left origin)
+     * Text ko available width (maxWidth) ke hisaab se automatically words aur lines
+     * mein wrap karta hai.
      */
+    private List<String> wrapTextToWidth(String text, PDFont font, float fontSize, float maxWidth) throws IOException {
+        List<String> resultLines = new ArrayList<>();
+        if (text == null || text.isEmpty()) {
+            return resultLines;
+        }
+
+        float effectiveMaxWidth = Math.max(maxWidth, fontSize * 2.0f);
+        String sanitized = sanitizeForWinAnsi(text);
+        String[] manualParagraphs = sanitized.split("\r?\n");
+
+        for (String paragraph : manualParagraphs) {
+            if (paragraph.isBlank()) {
+                resultLines.add("");
+                continue;
+            }
+
+            String[] words = paragraph.split("\\s+");
+            StringBuilder currentLine = new StringBuilder();
+
+            for (String word : words) {
+                if (word.isEmpty()) {
+                    continue;
+                }
+                String candidate = currentLine.isEmpty() ? word : currentLine + " " + word;
+                float candidateWidth = safeGetStringWidth(font, candidate, fontSize);
+
+                if (candidateWidth <= effectiveMaxWidth) {
+                    currentLine.setLength(0);
+                    currentLine.append(candidate);
+                } else {
+                    if (!currentLine.isEmpty()) {
+                        resultLines.add(currentLine.toString());
+                        currentLine.setLength(0);
+                    }
+
+                    // Agar koi single word hi maxWidth se bada ho, toh use characters mein break karein
+                    float wordWidth = safeGetStringWidth(font, word, fontSize);
+                    if (wordWidth > effectiveMaxWidth) {
+                        StringBuilder charChunk = new StringBuilder();
+                        for (int i = 0; i < word.length(); i++) {
+                            char c = word.charAt(i);
+                            String nextChunk = charChunk.toString() + c;
+                            float chunkW = safeGetStringWidth(font, nextChunk, fontSize);
+                            if (chunkW > effectiveMaxWidth && !charChunk.isEmpty()) {
+                                resultLines.add(charChunk.toString());
+                                charChunk.setLength(0);
+                            }
+                            charChunk.append(c);
+                        }
+                        currentLine.append(charChunk);
+                    } else {
+                        currentLine.append(word);
+                    }
+                }
+            }
+
+            if (!currentLine.isEmpty()) {
+                resultLines.add(currentLine.toString());
+            }
+        }
+
+        return resultLines;
+    }
+
+    /**
+     * splitFromTopY ke neeche wale poore PDF page hisse ko capture karke deltaY
+     * points neeche khiskata hai.
+     */
+    private void shiftPageContentBelow(PDDocument doc, int pageIndex, PDPage page,
+            float splitFromTopY, float deltaY, Color bgColor) throws IOException {
+        PDRectangle cropBox = page.getCropBox() != null ? page.getCropBox() : page.getMediaBox();
+        float originX = cropBox.getLowerLeftX();
+        float originY = cropBox.getLowerLeftY();
+        float pageW = cropBox.getWidth();
+        float pageH = cropBox.getHeight();
+
+        if (splitFromTopY >= pageH - 5.0f || deltaY <= 0) {
+            return;
+        }
+
+        float scale = 3.0f; // 216 DPI high-res rendering taaki quality bilkul sharp rahe
+        PDFRenderer renderer = new PDFRenderer(doc);
+        BufferedImage pageImage = renderer.renderImage(pageIndex, scale);
+
+        int cropStartY = Math.max(0, Math.min(pageImage.getHeight() - 1, Math.round(splitFromTopY * scale)));
+        int cropHeight = pageImage.getHeight() - cropStartY;
+        if (cropHeight <= 1) {
+            return;
+        }
+
+        BufferedImage lowerPartImage = pageImage.getSubimage(0, cropStartY, pageImage.getWidth(), cropHeight);
+        PDImageXObject pdImage = LosslessFactory.createFromImage(doc, lowerPartImage);
+
+        float lowerSlicePdfHeight = pageH - splitFromTopY;
+
+        try (PDPageContentStream cs = new PDPageContentStream(
+                doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
+            // Purane lower area ko clean karein
+            cs.setNonStrokingColor(bgColor);
+            cs.addRect(originX, originY, pageW, lowerSlicePdfHeight);
+            cs.fill();
+
+            // Neeche wale hisse ko deltaY points neeche draw karein
+            cs.drawImage(pdImage, originX, originY - deltaY, pageW, lowerSlicePdfHeight);
+        }
+    }
+
     private double[] toUnrotatedPdfCoords(double[] bbox, int rotation, float pageWidth, float pageHeight) {
-        if (bbox == null || bbox.length < 4) return new double[4];
+        if (bbox == null || bbox.length < 4)
+            return new double[4];
         int rot = ((rotation % 360) + 360) % 360;
         if (rot == 0) {
-            // No rotation — bbox is already in un-rotated PDF top-left origin space
             return bbox;
         }
 
-        double vx = bbox[0]; // viewport x (left)
-        double vy = bbox[1]; // viewport y (top)
-        double vw = bbox[2]; // viewport width
-        double vh = bbox[3]; // viewport height
+        double vx = bbox[0];
+        double vy = bbox[1];
+        double vw = bbox[2];
+        double vh = bbox[3];
 
         switch (rot) {
             case 90: {
-                // Viewport is (pageH x pageW). In the rotated viewport:
-                //   pdf_x = vy
-                //   pdf_y = pageW - vx - vw
-                //   pdf_w = vh, pdf_h = vw
                 double pdfX = vy;
                 double pdfY = pageWidth - vx - vw;
-                double pdfW = vh;
-                double pdfH = vw;
-                return new double[]{ pdfX, pdfY, pdfW, pdfH };
+                return new double[] { pdfX, pdfY, vh, vw };
             }
             case 180: {
-                // Viewport is same size as page.
-                //   pdf_x = pageW - vx - vw
-                //   pdf_y = pageH - vy - vh
-                double pdfX = pageWidth  - vx - vw;
+                double pdfX = pageWidth - vx - vw;
                 double pdfY = pageHeight - vy - vh;
-                return new double[]{ pdfX, pdfY, vw, vh };
+                return new double[] { pdfX, pdfY, vw, vh };
             }
             case 270: {
-                // Viewport is (pageH x pageW). In the rotated viewport:
-                //   pdf_x = pageH - vy - vh
-                //   pdf_y = vx
-                //   pdf_w = vh, pdf_h = vw
                 double pdfX = pageHeight - vy - vh;
                 double pdfY = vx;
-                double pdfW = vh;
-                double pdfH = vw;
-                return new double[]{ pdfX, pdfY, pdfW, pdfH };
+                return new double[] { pdfX, pdfY, vh, vw };
             }
             default:
                 return bbox;
@@ -237,7 +378,8 @@ public class PdfRedactionService {
     }
 
     public static String sanitizeForWinAnsi(String text) {
-        if (text == null) return "";
+        if (text == null)
+            return "";
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
@@ -248,11 +390,11 @@ public class PdfRedactionService {
                         sb.append(' ');
                     }
                 }
-                case '\u201C', '\u201D' -> sb.append('"'); // Curved double quotes
-                case '\u2018', '\u2019' -> sb.append('\''); // Curved single quotes
-                case '\u2013', '\u2014' -> sb.append('-'); // En/Em dashes
-                case '\u2022' -> sb.append('-'); // Bullet point
-                case '\u2026' -> sb.append("..."); // Ellipsis
+                case '\u201C', '\u201D' -> sb.append('"');
+                case '\u2018', '\u2019' -> sb.append('\'');
+                case '\u2013', '\u2014' -> sb.append('-');
+                case '\u2022' -> sb.append('-');
+                case '\u2026' -> sb.append("...");
                 case '\t' -> sb.append("    ");
                 default -> {
                     if (c >= 32 && c <= 255) {

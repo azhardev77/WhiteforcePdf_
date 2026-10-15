@@ -13,6 +13,7 @@ import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,10 +55,139 @@ class DocumentControllerTest {
             PDPage page = new PDPage(new PDRectangle(0, 0, 612, 792));
             doc.addPage(page);
             try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                // 0. Primary paragraph block (verifies schema assertions in testExtractValidPdf)
+                PDFont regularFont = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
                 cs.beginText();
-                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
-                cs.newLineAtOffset(50, 700);
+                cs.setFont(regularFont, 12);
+                cs.newLineAtOffset(50, 750);
                 cs.showText("Sample REST Controller PDF");
+                cs.endText();
+
+                // 1. Company header
+                PDFont boldFont = new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD);
+                cs.beginText();
+                cs.setFont(boldFont, 14);
+                cs.newLineAtOffset(50, 720);
+                cs.showText("Malanjkhand Copper Project");
+                cs.endText();
+
+                // 2. Centered heading "Tender Enquiry (RFQ)"
+                cs.beginText();
+                cs.setFont(boldFont, 16);
+                cs.newLineAtOffset(220, 685);
+                cs.showText("Tender Enquiry (RFQ)");
+                cs.endText();
+
+                // Vector underline strictly underneath "Tender Enquiry (RFQ)" (y = 682.0)
+                float textWidth = (boldFont.getStringWidth("Tender Enquiry (RFQ)") / 1000.0f) * 16.0f;
+                cs.setLineWidth(1.0f);
+                cs.moveTo(220, 682.0f);
+                cs.lineTo(220 + textWidth, 682.0f);
+                cs.stroke();
+
+                // 3. Subheading / clause: "Supply of semi-skilled and skilled manpower..."
+                cs.beginText();
+                cs.setFont(regularFont, 11);
+                cs.newLineAtOffset(50, 650);
+                cs.showText("Supply of semi-skilled and skilled manpower for maintenance work at MCP");
+                cs.endText();
+
+                // 4. Two-column details table
+                // Left column
+                cs.beginText();
+                cs.setFont(boldFont, 11);
+                cs.newLineAtOffset(50, 620);
+                cs.showText("HindustanCopperLtd.,");
+                cs.endText();
+
+                // 3 horizontal blank lines underneath HindustanCopperLtd.,
+                // Blank Line 1:
+                cs.setLineWidth(1.0f);
+                cs.moveTo(50, 603);
+                cs.lineTo(250, 603);
+                cs.stroke();
+                cs.beginText();
+                cs.setFont(regularFont, 10);
+                cs.newLineAtOffset(250, 605);
+                cs.showText(",");
+                cs.endText();
+
+                // Blank Line 2:
+                cs.moveTo(50, 588);
+                cs.lineTo(250, 588);
+                cs.stroke();
+                cs.beginText();
+                cs.setFont(regularFont, 10);
+                cs.newLineAtOffset(250, 590);
+                cs.showText(",");
+                cs.endText();
+
+                // Blank Line 3:
+                cs.moveTo(50, 573);
+                cs.lineTo(250, 573);
+                cs.stroke();
+                cs.beginText();
+                cs.setFont(regularFont, 10);
+                cs.newLineAtOffset(250, 575);
+                cs.showText(",");
+                cs.endText();
+
+                // Right column
+                cs.beginText();
+                cs.setFont(boldFont, 11);
+                cs.newLineAtOffset(310, 620);
+                cs.showText("Enquiry No.: M19282");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(regularFont, 10);
+                cs.newLineAtOffset(310, 605);
+                cs.showText("Date: 23-12-2025");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(regularFont, 10);
+                cs.newLineAtOffset(310, 590);
+                cs.showText("Last Date & Time for Tender Submission: 15-01-2026");
+                cs.endText();
+
+                // 5. Section heading below
+                cs.beginText();
+                cs.setFont(boldFont, 12);
+                cs.newLineAtOffset(50, 540);
+                cs.showText("INSTRUCTIONS TO BIDDERS FOR ONLINE TENDER SUBMISSION");
+                cs.endText();
+
+                // 6. Bank Guarantee clause lines (WPS Office paragraph block scenario)
+                cs.beginText();
+                cs.setFont(regularFont, 12);
+                cs.newLineAtOffset(50, 515);
+                cs.showText("M/s. Bidder upon being issued LOI shall furnish Hindustan Copper Limited");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(regularFont, 12);
+                cs.newLineAtOffset(50, 492);
+                cs.showText("at .................... a Bank Guarantee for Rs. ---only (Rupees");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(regularFont, 12);
+                cs.newLineAtOffset(50, 469);
+                cs.showText("Fifty Thousand only) towards Earnest Money Deposit as hereinafter mentioned.");
+                cs.endText();
+
+                // 7. Subsequent paragraph blocks (WPS Office test scenario)
+                cs.beginText();
+                cs.setFont(regularFont, 12);
+                cs.newLineAtOffset(50, 430);
+                cs.showText("1. We hereby agree to pay the said guarantee amount upon demand.");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(regularFont, 12);
+                cs.newLineAtOffset(50, 407);
+                cs.showText("2. You will have full liberty without our consent to vary the terms of contract.");
                 cs.endText();
             }
             doc.save(baos);
@@ -141,13 +271,15 @@ class DocumentControllerTest {
     @Test
     @DisplayName("Ensure sample-pdfs directory contains sample.pdf and tender.pdf")
     void testGenerateSamplePdfFiles() throws Exception {
-        Path sampleDir = java.nio.file.Paths.get("..", "sample-pdfs");
-        if (!java.nio.file.Files.exists(sampleDir)) {
-            sampleDir = java.nio.file.Paths.get("sample-pdfs");
-        }
-        if (java.nio.file.Files.exists(sampleDir)) {
-            java.nio.file.Files.write(sampleDir.resolve("sample.pdf"), samplePdfBytes);
-            java.nio.file.Files.write(sampleDir.resolve("tender.pdf"), samplePdfBytes);
+        Path[] dirs = new Path[] {
+            java.nio.file.Paths.get("sample-pdfs"),
+            java.nio.file.Paths.get("..", "sample-pdfs")
+        };
+        for (Path dir : dirs) {
+            if (java.nio.file.Files.exists(dir)) {
+                java.nio.file.Files.write(dir.resolve("sample.pdf"), samplePdfBytes);
+                java.nio.file.Files.write(dir.resolve("tender.pdf"), samplePdfBytes);
+            }
         }
     }
 }

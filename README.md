@@ -16,14 +16,23 @@ A pixel-perfect PDF document editor and visual redaction studio built with Sprin
 
 ## Running Locally
 
-### Backend
+### Single-Command Start (Root)
+Run both backend and frontend concurrently with one command from the project root:
+```bash
+npm install     # First time only to install concurrently
+npm run dev     # Starts both Spring Boot backend & Vite frontend concurrently
+```
+
+### Or Run Individually
+
+#### Backend
 ```bash
 cd backend
 mvn spring-boot:run
 ```
 API runs on `http://localhost:8080`.
 
-### Frontend
+#### Frontend
 ```bash
 cd frontend
 npm install

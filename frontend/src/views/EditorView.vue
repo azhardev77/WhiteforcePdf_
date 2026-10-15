@@ -164,6 +164,7 @@
       <!-- State 2: 100% Pixel-Perfect PDF.js Canvas with Interactive Overlay -->
       <PdfCanvasEditor
         v-else
+        ref="canvasEditorRef"
         :document-model="documentStore.documentModel"
         :zoom="documentStore.zoom"
       />
@@ -234,8 +235,14 @@ async function loadSampleDocument() {
   }
 }
 
+const canvasEditorRef = ref(null);
+
 async function handleExport() {
   try {
+    if (canvasEditorRef.value?.buildRedactionPayload) {
+      const edits = canvasEditorRef.value.buildRedactionPayload();
+      documentStore.setEdits(edits);
+    }
     await documentStore.downloadPdf();
   } catch {
     // Error handled in store

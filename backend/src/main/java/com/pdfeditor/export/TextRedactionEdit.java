@@ -1,5 +1,6 @@
 package com.pdfeditor.export;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.pdfeditor.model.Style;
 
@@ -7,8 +8,10 @@ import java.util.Arrays;
 import java.util.Objects;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class TextRedactionEdit {
 
+    private String id;
     private int pageNumber; // 1-indexed
     private double[] bbox; // [x, y, w, h] in PDF points (origin top-left)
     private String originalText;
@@ -23,6 +26,8 @@ public class TextRedactionEdit {
      * Defaults to 0 (no rotation).
      */
     private int pageRotation = 0;
+    private String lineId;
+    private boolean reflowed = false;
 
     public TextRedactionEdit() {
         this.pageNumber = 1;
@@ -135,6 +140,30 @@ public class TextRedactionEdit {
 
     public void setPageRotation(int pageRotation) {
         this.pageRotation = ((pageRotation % 360) + 360) % 360;
+    }
+
+    public String getId() {
+        return id;
+    }
+
+    public void setId(String id) {
+        this.id = id;
+    }
+
+    public String getLineId() {
+        return lineId;
+    }
+
+    public void setLineId(String lineId) {
+        this.lineId = lineId;
+    }
+
+    public boolean isReflowed() {
+        return reflowed;
+    }
+
+    public void setReflowed(boolean reflowed) {
+        this.reflowed = reflowed;
     }
 
     @Override

@@ -11,6 +11,8 @@ import com.pdfeditor.model.TableBlock;
 import com.pdfeditor.model.TextRun;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
@@ -29,7 +31,8 @@ public class HtmlGenerator {
 
     public String generateHtml(DocumentModel document) {
         if (document == null) {
-            return HtmlTemplate.wrap("<div class=\"pdf-page\"></div>", cssGenerator.generateBaseCss(612, 792), "Empty Document");
+            return HtmlTemplate.wrap("<div class=\"pdf-page\"></div>", cssGenerator.generateBaseCss(612, 792),
+                    "Empty Document");
         }
 
         StringBuilder pagesHtml = new StringBuilder();
@@ -54,14 +57,26 @@ public class HtmlGenerator {
 
         double width = page.getWidth() > 0 ? page.getWidth() : 612.0;
         double height = page.getHeight() > 0 ? page.getHeight() : 792.0;
-        String pageStyle = String.format(Locale.US, "width: %.2fpt; height: %.2fpt;", width, height);
+        String pageStyle = String.format(Locale.US, "width: %.2fpt; min-height: %.2fpt;", width, height);
 
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format("<div class=\"pdf-page\" id=\"page-%d\" style=\"%s\">\n", page.getPageNumber(), pageStyle));
+        sb.append(String.format("<div class=\"pdf-page\" id=\"page-%d\" style=\"%s\">\n", page.getPageNumber(),
+                pageStyle));
 
-        if (page.getBlocks() != null) {
-            for (Block block : page.getBlocks()) {
-                sb.append("    ").append(renderBlock(block)).append("\n");
+        if (page.getBlocks() != null && !page.getBlocks().isEmpty()) {
+            List<Block> sortedBlocks = new ArrayList<>(page.getBlocks());
+            sortedBlocks.sort(Comparator
+                    .comparingDouble(b -> (b.getBbox() != null && b.getBbox().length >= 2) ? b.getBbox()[1] : 0.0));
+
+            double prevBottomY = 0.0;
+            for (Block block : sortedBlocks) {
+                String blockStyle = cssGenerator.generateFlowBlockStyle(block, prevBottomY, width);
+                sb.append("    ").append(renderBlockWithStyle(block, blockStyle)).append("\n");
+
+                double[] bbox = block.getBbox();
+                if (bbox != null && bbox.length >= 4) {
+                    prevBottomY = Math.max(prevBottomY, bbox[1] + bbox[3]);
+                }
             }
         }
 
@@ -73,43 +88,50 @@ public class HtmlGenerator {
         if (block == null) {
             return "";
         }
-
         String blockStyle = cssGenerator.generateBlockStyle(block);
-        String styleAttr = blockStyle.isEmpty() ? "" : " style=\"" + blockStyle + "\"";
+        return renderBlockWithStyle(block, blockStyle);
+    }
+
+    private String renderBlockWithStyle(Block block, String blockStyle) {
+        if (block == null) {
+            return "";
+        }
+
+        String styleAttr = (blockStyle == null || blockStyle.isEmpty()) ? "" : " style=\"" + blockStyle + "\"";
         String idAttr = (block.getId() != null) ? " id=\"" + escapeHtml(block.getId()) + "\"" : "";
 
         if (block instanceof HeadingBlock hb) {
-            int level = hb.getLevel();
-            if (level < 1) level = 1;
-            if (level > 6) level = 6;
+            int level = Math.max(1, Math.min(6, hb.getLevel()));
             String tag = "h" + level;
             return "<" + tag + idAttr + " class=\"block heading-block\"" + styleAttr + ">" +
-                   renderRuns(hb.getRuns()) +
-                   "</" + tag + ">";
+                    renderRuns(hb.getRuns()) +
+                    "</" + tag + ">";
         }
 
         if (block instanceof ParagraphBlock pb) {
             return "<p" + idAttr + " class=\"block paragraph-block\"" + styleAttr + ">" +
-                   renderRuns(pb.getRuns()) +
-                   "</p>";
+                    renderRuns(pb.getRuns()) +
+                    "</p>";
         }
 
         if (block instanceof ImageBlock ib) {
             return "<div" + idAttr + " class=\"block image-block\"" + styleAttr + ">" +
-                   "<img src=\"" + escapeHtml(ib.getSrc()) + "\" alt=\"PDF Image\" style=\"width: 100%; height: 100%; object-fit: contain;\" />" +
-                   "</div>";
+                    "<img src=\"" + escapeHtml(ib.getSrc())
+                    + "\" alt=\"PDF Image\" style=\"max-width: 100%; height: auto; object-fit: contain;\" />" +
+                    "</div>";
         }
 
         if (block instanceof TableBlock tb) {
             StringBuilder tableHtml = new StringBuilder();
-            tableHtml.append("<div").append(idAttr).append(" class=\"block table-block\"").append(styleAttr).append(">");
+            tableHtml.append("<div").append(idAttr).append(" class=\"block table-block\"").append(styleAttr)
+                    .append(">");
             tableHtml.append("<table style=\"width: 100%; border-collapse: collapse;\">");
             if (tb.getCells() != null) {
                 for (List<ParagraphBlock> row : tb.getCells()) {
                     tableHtml.append("<tr>");
                     for (ParagraphBlock cell : row) {
                         tableHtml.append("<td style=\"border: 1px solid #ccc; padding: 4px;\">");
-                        tableHtml.append(renderBlock(cell));
+                        tableHtml.append(renderBlockWithStyle(cell, ""));
                         tableHtml.append("</td>");
                     }
                     tableHtml.append("</tr>");
@@ -122,10 +144,11 @@ public class HtmlGenerator {
         if (block instanceof ListBlock lb) {
             String tag = lb.isOrdered() ? "ol" : "ul";
             StringBuilder listHtml = new StringBuilder();
-            listHtml.append("<").append(tag).append(idAttr).append(" class=\"block list-block\"").append(styleAttr).append(">");
+            listHtml.append("<").append(tag).append(idAttr).append(" class=\"block list-block\"").append(styleAttr)
+                    .append(">");
             if (lb.getItems() != null) {
                 for (ParagraphBlock item : lb.getItems()) {
-                    listHtml.append("<li>").append(renderBlock(item)).append("</li>");
+                    listHtml.append("<li>").append(renderBlockWithStyle(item, "")).append("</li>");
                 }
             }
             listHtml.append("</").append(tag).append(">");
@@ -156,12 +179,13 @@ public class HtmlGenerator {
     }
 
     public static String escapeHtml(String text) {
-        if (text == null) return "";
+        if (text == null)
+            return "";
         return text.replace("&", "&amp;")
-                   .replace("<", "&lt;")
-                   .replace(">", "&gt;")
-                   .replace("\"", "&quot;")
-                   .replace("'", "&#39;");
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
     }
 
     public CssGenerator getCssGenerator() {

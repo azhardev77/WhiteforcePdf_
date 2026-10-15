@@ -15,6 +15,10 @@ public class TextRun {
         this.bbox = new double[4];
     }
 
+    public TextRun(String text, Style style) {
+        this(text, style, new double[4]);
+    }
+
     public TextRun(String text, Style style, double[] bbox) {
         this.text = text;
         this.style = style;

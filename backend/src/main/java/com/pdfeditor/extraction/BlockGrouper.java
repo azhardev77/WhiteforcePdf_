@@ -14,8 +14,8 @@ import java.util.Map;
 
 public class BlockGrouper {
 
-    public static final double GAP_THRESHOLD_RATIO = 1.5;
-    public static final double HEADING_RATIO_THRESHOLD = 1.20;
+    private static final double GAP_THRESHOLD_RATIO = 1.5;
+    private static final double HEADING_RATIO_THRESHOLD = 1.20;
 
     public List<Block> groupLinesIntoBlocks(List<Line> lines) {
         if (lines == null || lines.isEmpty()) {
@@ -156,8 +156,24 @@ public class BlockGrouper {
         double maxY = -Double.MAX_VALUE;
         double maxFontSize = 0;
 
-        for (Line line : blockLines) {
-            allRuns.addAll(line.getRuns());
+        for (int i = 0; i < blockLines.size(); i++) {
+            Line line = blockLines.get(i);
+            List<TextRun> lineRuns = line.getRuns();
+
+            if (lineRuns != null && !lineRuns.isEmpty()) {
+                // Do lines ke beech space jodein taaki reflow mein words chipak na jayein
+                if (!allRuns.isEmpty()) {
+                    TextRun lastRun = allRuns.get(allRuns.size() - 1);
+                    TextRun firstNewRun = lineRuns.get(0);
+                    boolean endsWithSpace = lastRun.getText() != null && lastRun.getText().endsWith(" ");
+                    boolean startsWithSpace = firstNewRun.getText() != null && firstNewRun.getText().startsWith(" ");
+                    if (!endsWithSpace && !startsWithSpace) {
+                        allRuns.add(new TextRun(" ", lastRun.getStyle()));
+                    }
+                }
+                allRuns.addAll(lineRuns);
+            }
+
             double[] b = line.getBbox();
             minX = Math.min(minX, b[0]);
             minY = Math.min(minY, b[1]);
@@ -168,7 +184,7 @@ public class BlockGrouper {
 
         double width = Math.max(0, maxX - minX);
         double height = Math.max(0, maxY - minY);
-        double[] bbox = new double[]{minX, minY, width, height};
+        double[] bbox = new double[] { minX, minY, width, height };
 
         if (blockType == BlockType.HEADING) {
             int level = determineHeadingLevel(maxFontSize, baseFontSize);

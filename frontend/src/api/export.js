@@ -50,7 +50,6 @@ export async function exportRedactedPdf(fileOrBlob, edits, downloadFilename) {
   const response = await api.post('/api/export/redact', formData, {
     responseType: 'blob',
     headers: {
-      'Content-Type': 'multipart/form-data',
       'Accept': 'application/pdf'
     }
   });

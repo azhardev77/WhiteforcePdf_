@@ -346,4 +346,29 @@ class ExtractionPipelineTest {
         assertEquals(2, deserializedHeading.getLevel());
         assertEquals("Sample Heading", deserializedHeading.getText());
     }
+
+    @Test
+    @DisplayName("BlockGrouper inserts space between merged lines when previous line does not end with space")
+    void testBlockGrouperPreservesInterLineWordSpacing() {
+        // Line 1 ends without trailing space
+        Line line1 = new Line(
+            List.of(new TextRun("FirstLineWord", Style.of("Helvetica", 12.0, false, false), new double[]{50, 50, 80, 12})),
+            new double[]{50, 50, 80, 12}, 62.0, 12.0
+        );
+
+        // Line 2 starts without leading space
+        Line line2 = new Line(
+            List.of(new TextRun("SecondLineWord", Style.of("Helvetica", 12.0, false, false), new double[]{50, 64, 80, 12})),
+            new double[]{50, 64, 80, 12}, 76.0, 12.0
+        );
+
+        List<Block> blocks = blockGrouper.groupLinesIntoBlocks(List.of(line1, line2), 12.0);
+        assertThat(blocks).hasSize(1);
+        assertThat(blocks.get(0)).isInstanceOf(ParagraphBlock.class);
+
+        ParagraphBlock pb = (ParagraphBlock) blocks.get(0);
+        assertThat(pb.getRuns()).hasSize(3);
+        assertThat(pb.getRuns().get(1).getText()).isEqualTo(" ");
+        assertThat(pb.getText()).isEqualTo("FirstLineWord SecondLineWord");
+    }
 }

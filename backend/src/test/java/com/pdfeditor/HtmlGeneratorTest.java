@@ -114,4 +114,29 @@ class HtmlGeneratorTest {
         assertThat(html).contains("<!DOCTYPE html>");
         assertThat(html).contains("<div class=\"pdf-page\"></div>");
     }
+
+    @Test
+    @DisplayName("Verify flow layout styles in generated HTML with reflow support")
+    void testFlowLayoutReflowSupport() {
+        ParagraphBlock block1 = new ParagraphBlock(
+            new double[]{50.0, 40.0, 200.0, 20.0},
+            List.of(new TextRun("Block 1", Style.defaultStyle(), new double[]{50.0, 40.0, 200.0, 20.0})),
+            "left"
+        );
+        ParagraphBlock block2 = new ParagraphBlock(
+            new double[]{50.0, 70.0, 200.0, 20.0},
+            List.of(new TextRun("Block 2", Style.defaultStyle(), new double[]{50.0, 70.0, 200.0, 20.0})),
+            "left"
+        );
+
+        PageModel page = new PageModel(1, 612.0, 792.0, List.of(block1, block2));
+        DocumentModel doc = new DocumentModel("doc-flow", "flow.pdf", List.of(page));
+
+        String html = htmlGenerator.generateHtml(doc);
+        assertThat(html).contains("display: flow-root;");
+        assertThat(html).contains("overflow-wrap: break-word;");
+        assertThat(html).contains("margin-left: 50.00pt;");
+        assertThat(html).contains("margin-top: 40.00pt;");
+        assertThat(html).contains("margin-top: 10.00pt;");
+    }
 }
