@@ -22,7 +22,7 @@ backend/target/
 Thumbs.db
 
 # Test outputs & temp archives
-*_verified.png
+/*_verified.png
 *.rar
 *.zip
 tender_redacted_export.pdf
