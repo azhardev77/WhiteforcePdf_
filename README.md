@@ -58,6 +58,7 @@ As new text wraps into multiple lines, paragraph height grows and downstream par
 * **Direct Live Typing**: No clumsy single-word popup modals or floating buttons. Click anywhere to type directly.
 * **Intelligent Line Clustering**: Groups text items sharing font metrics and pitch into unified paragraph blocks while strictly respecting table column boundaries.
 * **Zero Font Clipping**: Configured with CSS `pre-wrap`, `break-word`, and exact line-height pitch matching so characters never get cropped.
+* **Drag & Drop Text Block Repositioning**: Grab handle with 4-way move arrows on hover or selection allows free dragging and repositioning of any paragraph block across the page viewport. Original coordinates maintain an active canvas whiteout mask while PDFBox renders replacement text at the new dropped location.
 * **1-Click Revert**: Hover over any edited paragraph to view diff status or click the `×` button to revert to the original text.
 
 ### 📐 Universal Blank Line & Fill-in-the-Blank Detection

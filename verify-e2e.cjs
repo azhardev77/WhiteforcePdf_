@@ -372,6 +372,114 @@ const fs = require('fs');
     console.log(`Screenshot of edited blank lines saved to ${blankScreenshotPath}`);
 
     // =========================================================================
+    // REQUIREMENT 6: Drag & Drop / Move Paragraph Block
+    // =========================================================================
+    console.log('\n--- VERIFYING REQUIREMENT 6: Drag & Drop / Move Paragraph Block ---');
+
+    // 1. Target a paragraph block ("Tender Enquiry (RFQ)")
+    const moveTargetBlock = page.locator('#pdf-page-1 .wps-paragraph-block').filter({ hasText: /Tender Enquiry/ }).first();
+    await moveTargetBlock.waitFor({ state: 'visible', timeout: 5000 });
+    const moveBlockId = await moveTargetBlock.getAttribute('data-block-id');
+    console.log(`Targeting block for Drag & Drop: [${moveBlockId}]`);
+
+    // 2. Hover over the block to display the 4-way drag handle
+    await moveTargetBlock.hover();
+    await page.waitForTimeout(200);
+
+    const dragHandle = moveTargetBlock.locator('.block-drag-handle');
+    await dragHandle.waitFor({ state: 'visible', timeout: 3000 });
+    console.log('[PASS] Drag Handle (.block-drag-handle) with 4-way move arrow is visible on hover.');
+
+    const initialBbox = await moveTargetBlock.boundingBox();
+    console.log(`  Initial Block Position: x=${initialBbox.x.toFixed(1)}, y=${initialBbox.y.toFixed(1)}, width=${initialBbox.width.toFixed(1)}, height=${initialBbox.height.toFixed(1)}`);
+
+    const handleBox = await dragHandle.boundingBox();
+    const startHandleX = handleBox.x + (handleBox.width / 2);
+    const startHandleY = handleBox.y + (handleBox.height / 2);
+
+    const deltaX = 50;
+    const deltaY = 30;
+
+    console.log(`Dragging block by +${deltaX}px right and +${deltaY}px down...`);
+    await page.mouse.move(startHandleX, startHandleY);
+    await page.mouse.down();
+    await page.mouse.move(startHandleX + deltaX, startHandleY + deltaY, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForTimeout(600);
+
+    // 3. Assert coordinates updated
+    const movedBbox = await moveTargetBlock.boundingBox();
+    const actualDeltaX = movedBbox.x - initialBbox.x;
+    const actualDeltaY = movedBbox.y - initialBbox.y;
+    console.log(`  Moved Block Position: x=${movedBbox.x.toFixed(1)}, y=${movedBbox.y.toFixed(1)} (Actual Delta: +${actualDeltaX.toFixed(1)}px X, +${actualDeltaY.toFixed(1)}px Y)`);
+
+    if (Math.abs(actualDeltaX - deltaX) > 6) {
+      throw new Error(`REQUIREMENT 6 FAILED: Block did not move ~${deltaX}px horizontally! Actual delta: ${actualDeltaX.toFixed(1)}px`);
+    }
+    if (Math.abs(actualDeltaY - deltaY) > 6) {
+      throw new Error(`REQUIREMENT 6 FAILED: Block did not move ~${deltaY}px vertically! Actual delta: ${actualDeltaY.toFixed(1)}px`);
+    }
+    console.log('[PASS] Requirement 6a: Block coordinates updated accurately (+50px right, +30px down).');
+
+    // 4. Assert block has data-is-moved="true" and class is-moved
+    const isMovedAttr = await moveTargetBlock.getAttribute('data-is-moved');
+    const movedClass = await moveTargetBlock.getAttribute('class');
+    if (isMovedAttr !== 'true' || !movedClass.includes('is-moved')) {
+      throw new Error(`REQUIREMENT 6 FAILED: Block missing data-is-moved="true" or is-moved class! (attr=${isMovedAttr}, class=${movedClass})`);
+    }
+    console.log('[PASS] Requirement 6b: Block marked with data-is-moved="true" and .is-moved class.');
+
+    // 5. Assert whiteout mask box is active at the original coordinates
+    const maskSelector = `#pdf-page-1 .whiteout-mask-box[id="mask-${moveBlockId}"]`;
+    const maskEl = page.locator(maskSelector);
+    await maskEl.waitFor({ state: 'attached', timeout: 5000 });
+    const maskBox = await maskEl.boundingBox();
+    console.log(`  Original Position Whiteout Mask: x=${maskBox.x.toFixed(1)}, y=${maskBox.y.toFixed(1)}, width=${maskBox.width.toFixed(1)}, height=${maskBox.height.toFixed(1)}`);
+
+    // Verify mask is at original position (near initialBbox.x and initialBbox.y, NOT moved by +50, +30)
+    if (Math.abs(maskBox.x - initialBbox.x) > 6 || Math.abs(maskBox.y - initialBbox.y) > 6) {
+      throw new Error(`REQUIREMENT 6 FAILED: Whiteout mask is NOT at the original position! (Mask: ${maskBox.x.toFixed(1)}, ${maskBox.y.toFixed(1)}, Expected: ${initialBbox.x.toFixed(1)}, ${initialBbox.y.toFixed(1)})`);
+    }
+    console.log('[PASS] Requirement 6c: Whiteout mask box is active at the original position covering old PDF text.');
+
+    // 6. Assert export payload has updated coordinates and originalBoundingBox
+    const edits = await page.evaluate(() => {
+      if (typeof window.__buildRedactionPayload === 'function') {
+        return window.__buildRedactionPayload();
+      }
+      return [];
+    });
+    const movedEdit = edits.find(e => e.lineId === moveBlockId);
+    if (!movedEdit) {
+      throw new Error(`REQUIREMENT 6 FAILED: Export edits missing redaction entry for moved block ${moveBlockId}!`);
+    }
+    console.log('  Moved Block Export Payload Entry:', {
+      id: movedEdit.id,
+      isMoved: movedEdit.isMoved,
+      newBbox: movedEdit.bbox,
+      originalBbox: movedEdit.originalBbox
+    });
+
+    if (!movedEdit.isMoved) {
+      throw new Error('REQUIREMENT 6 FAILED: Export edit isMoved is false!');
+    }
+    if (!movedEdit.originalBbox || movedEdit.originalBbox.length !== 4) {
+      throw new Error('REQUIREMENT 6 FAILED: Export edit missing valid originalBbox / originalBoundingBox!');
+    }
+    const bboxShiftX = movedEdit.bbox[0] - movedEdit.originalBbox[0];
+    const bboxShiftY = movedEdit.bbox[1] - movedEdit.originalBbox[1];
+    console.log(`  Export PDF Coordinate Shift: dX=${bboxShiftX.toFixed(2)}, dY=${bboxShiftY.toFixed(2)}`);
+    if (bboxShiftX <= 10 || bboxShiftY <= 5) {
+      throw new Error(`REQUIREMENT 6 FAILED: Export bbox was not shifted! (dX=${bboxShiftX}, dY=${bboxShiftY})`);
+    }
+    console.log('[PASS] Requirement 6d: Export payload contains isMoved: true, originalBbox for whiteout, and updated bbox for dropped position.');
+
+    // Save screenshot of moved block and whiteout mask
+    const movedScreenshotPath = path.resolve(rootDir, 'block_drag_moved_verified.png');
+    await page.screenshot({ path: movedScreenshotPath, fullPage: false });
+    console.log(`Screenshot of moved block saved to ${movedScreenshotPath}`);
+
+    // =========================================================================
     // REQUIREMENT 4: Seamless PDF Export & Verification
     // =========================================================================
     console.log('\n--- VERIFYING REQUIREMENT 4: Seamless PDF Export ---');

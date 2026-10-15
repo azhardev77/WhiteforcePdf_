@@ -112,14 +112,22 @@ public class PdfRedactionService {
                     float requiredHeight = wrappedLines.size() * effectiveLineHeight;
                     float extraHeightNeeded = (requiredHeight > effectiveBoxH) ? (requiredHeight - effectiveBoxH) : 0.0f;
 
+                    double[] whiteoutBbox = edit.getOriginalBbox() != null ? edit.getOriginalBbox() : edit.getBbox();
+                    double[] pdfWhiteoutBbox = toUnrotatedPdfCoords(whiteoutBbox, edit.getPageRotation(), pageW, pageH);
+
+                    float whiteoutX = (float) pdfWhiteoutBbox[0];
+                    float whiteoutY = (float) pdfWhiteoutBbox[1];
+                    float whiteoutW = (float) pdfWhiteoutBbox[2];
+                    float whiteoutH = (float) pdfWhiteoutBbox[3];
+
                     // Step 1: Pehle original text ko white/background box se मिटाएं (Redact)
                     // Fix 2: Exact text box height to strictly preserve underlines and border vectors directly below
                     if (!edit.isTransparentBackground()) {
                         float padX = 0.5f;
-                        float rectX = originX + boxX - padX;
-                        float rectW = boxW + (padX * 2f);
-                        float rectY = originY + (pageH - boxY - boxH);
-                        float rectH = boxH;
+                        float rectX = originX + whiteoutX - padX;
+                        float rectW = whiteoutW + (padX * 2f);
+                        float rectY = originY + (pageH - whiteoutY - whiteoutH);
+                        float rectH = whiteoutH;
 
                         try (PDPageContentStream cs = new PDPageContentStream(
                                 doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
@@ -131,10 +139,10 @@ public class PdfRedactionService {
                     } else if (edit.getOriginalText() != null && edit.getOriginalText().matches("^[\\s,.;:\\-_–—]+$") && !edit.getOriginalText().trim().isEmpty()) {
                         // For blank lines with trailing comma/punctuation, only whiteout the tiny ~10px area of the punctuation itself at the right end
                         // so the underlying horizontal black line is NOT erased, but the original comma is covered
-                        float punctW = Math.min(12.0f, boxW);
-                        float punctX = originX + boxX + boxW - punctW;
-                        float rectY = originY + (pageH - boxY - boxH);
-                        float rectH = boxH;
+                        float punctW = Math.min(12.0f, whiteoutW);
+                        float punctX = originX + whiteoutX + whiteoutW - punctW;
+                        float rectY = originY + (pageH - whiteoutY - whiteoutH);
+                        float rectH = whiteoutH;
 
                         try (PDPageContentStream cs = new PDPageContentStream(
                                 doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {

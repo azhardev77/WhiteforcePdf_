@@ -297,4 +297,28 @@ class PdfRedactionServiceTest {
             assertThat(lowerIndex).isGreaterThan(upperIndex);
         }
     }
+
+    @Test
+    @DisplayName("Moved block whites out originalBbox and renders text at new bbox")
+    void testMovedBlockRedaction() throws IOException {
+        byte[] originalPdf = createTestPdf("Tender Enquiry M19282");
+
+        TextRedactionEdit edit = new TextRedactionEdit();
+        edit.setPageNumber(1);
+        edit.setOriginalText("Tender Enquiry M19282");
+        edit.setNewText("Tender Enquiry M19282 (Relocated)");
+        edit.setOriginalBbox(new double[]{50.0, 85.0, 220.0, 25.0});
+        edit.setBbox(new double[]{100.0, 150.0, 250.0, 25.0});
+        edit.setMoved(true);
+        edit.setStyle(Style.of("Helvetica-Bold", 14.0, true, false, "#000000"));
+
+        byte[] modifiedPdf = pdfRedactionService.redactAndReplace(originalPdf, List.of(edit));
+        assertThat(modifiedPdf).isNotNull().isNotEmpty();
+
+        try (PDDocument doc = Loader.loadPDF(modifiedPdf)) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extracted = stripper.getText(doc);
+            assertThat(extracted).contains("Tender Enquiry M19282 (Relocated)");
+        }
+    }
 }

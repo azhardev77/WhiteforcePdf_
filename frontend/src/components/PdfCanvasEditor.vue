@@ -72,6 +72,8 @@
               <div
                 v-for="mask in getPageWhiteoutMasks(pageIndex)"
                 :key="mask.id"
+                :id="mask.id"
+                :data-mask-id="mask.id"
                 class="whiteout-mask-box"
                 :style="mask.style"
               />
@@ -90,6 +92,7 @@
                 :data-id="block.id"
                 :data-text="block.text"
                 :data-is-blank-line="block.isBlankLine ? 'true' : 'false'"
+                :data-is-moved="block.isMoved ? 'true' : 'false'"
                 :title="block.text"
                 class="wps-paragraph-block overlay-text-box"
                 :class="{
@@ -97,13 +100,28 @@
                   'is-edited': isBlockEdited(block),
                   'is-hovered': hoveredBlockId === block.id && editingBlockId !== block.id,
                   'is-active': documentStore.activeBlockId === block.id,
-                  'is-blank-line': block.isBlankLine
+                  'is-blank-line': block.isBlankLine,
+                  'is-moved': block.isMoved,
+                  'is-dragging': draggingBlockId === block.id
                 }"
                 :style="getParagraphBlockStyle(block)"
                 @mouseenter="hoveredBlockId = block.id"
                 @mouseleave="hoveredBlockId = null"
+                @pointerdown="onBlockPointerDown(block, $event)"
                 @click.stop="onParagraphClick(block, $event)"
               >
+                <!-- 4-Way Drag & Move Handle (Visible on hover or active/editing) -->
+                <div
+                  class="block-drag-handle"
+                  data-testid="block-drag-handle"
+                  title="Drag to move paragraph"
+                  @pointerdown.stop.prevent="startDragBlock(block, $event)"
+                >
+                  <svg viewBox="0 0 24 24" class="icon-drag-move" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/>
+                  </svg>
+                </div>
+
                 <!-- Screen-reader and locator text representation: always present in all states -->
                 <span class="sr-only-block-text">{{ editingBlockId === block.id ? activeBlockText : block.text }}</span>
 
@@ -250,6 +268,9 @@ function getPageWords(pageIndex) {
 
 function isBlockEdited(block) {
   if (!block) return false;
+  if (block.isMoved && (block.customX != null || block.customY != null)) {
+    return true;
+  }
   if (block.isBlankLine) {
     return Boolean(block.isEdited && block.text && block.text.trim());
   }
@@ -297,7 +318,8 @@ function getMaxAllowedWidth(block) {
   const vp = pageViewports.value[block.pageNumber];
   const pageW = vp ? vp.width : 600;
   const rightMargin = 36 * props.zoom;
-  return Math.max(block.originalWidth, pageW - block.originalX - rightMargin);
+  const posX = block.customX != null ? block.customX : block.originalX;
+  return Math.max(block.originalWidth, pageW - posX - rightMargin);
 }
 
 function getPageExpandedEdits(pageNumber) {
@@ -457,9 +479,12 @@ function getParagraphBlockStyle(block) {
     : block.originalHeight;
   const widthPx = Math.max(block.originalWidth, 30);
 
+  const posX = block.customX != null ? block.customX : block.originalX;
+  const posY = block.customY != null ? block.customY : block.y;
+
   const styleObj = {
-    left: `${Math.round(block.originalX)}px`,
-    top: `${Math.round(block.y)}px`,
+    left: `${Math.round(posX)}px`,
+    top: `${Math.round(posY)}px`,
     width: `${Math.round(widthPx)}px`,
     maxWidth: `${Math.round(maxW)}px`,
     height: `${Math.round(heightPx)}px`,
@@ -557,7 +582,95 @@ function findDotRange(text) {
   return null;
 }
 
+const draggingBlockId = ref(null);
+
+function onBlockPointerDown(block, event) {
+  if (event.target === event.currentTarget) {
+    startDragBlock(block, event);
+  }
+}
+
+function startDragBlock(block, event) {
+  if (event.button !== 0) return; // Only primary mouse button
+  if (editingBlockId.value === block.id) {
+    commitActiveBlock();
+  }
+
+  draggingBlockId.value = block.id;
+  documentStore.activeBlockId = block.id;
+
+  const startX = event.clientX;
+  const startY = event.clientY;
+
+  const blockStartX = block.customX != null ? block.customX : (block.originalX != null ? block.originalX : block.x);
+  const blockStartY = block.customY != null ? block.customY : (block.originalY != null ? block.originalY : block.y);
+
+  const vp = pageViewports.value[block.pageNumber];
+  const maxW = vp ? vp.width : 800;
+  const maxH = vp ? vp.height : 1100;
+
+  const blockW = block.originalWidth || block.width || 100;
+  const blockH = block.originalHeight || block.height || 30;
+
+  const clampMinX = 0;
+  const clampMaxX = Math.max(0, maxW - blockW);
+  const clampMinY = 0;
+  const clampMaxY = Math.max(0, maxH - blockH);
+
+  let hasMoved = false;
+
+  function onPointerMove(e) {
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+      hasMoved = true;
+    }
+
+    const clampedX = Math.min(Math.max(blockStartX + dx, clampMinX), clampMaxX);
+    const clampedY = Math.min(Math.max(blockStartY + dy, clampMinY), clampMaxY);
+
+    block.customX = clampedX;
+    block.customY = clampedY;
+    block.x = clampedX;
+    block.y = clampedY;
+    block.isMoved = true;
+    reflowVersion.value++;
+  }
+
+  function onPointerUp(e) {
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerUp);
+
+    setTimeout(() => {
+      draggingBlockId.value = null;
+    }, 50);
+
+    if (hasMoved || block.isMoved) {
+      block.isEdited = true;
+      editedBlocksState[block.id] = {
+        ...(editedBlocksState[block.id] || {}),
+        newText: block.text,
+        deltaY: block.deltaY || 0,
+        currentHeight: block.currentHeight || block.originalHeight,
+        customX: block.customX,
+        customY: block.customY,
+        isMoved: true
+      };
+
+      const edits = buildRedactionPayload();
+      documentStore.setEdits(edits);
+    }
+  }
+
+  window.addEventListener('pointermove', onPointerMove);
+  window.addEventListener('pointerup', onPointerUp);
+  window.addEventListener('pointercancel', onPointerUp);
+}
+
 function onParagraphClick(block, event) {
+  if (draggingBlockId.value) return;
   if (editingBlockId.value === block.id) return;
   startEditingBlock(block, event);
 }
@@ -681,12 +794,15 @@ function commitActiveBlock() {
         targetBlock.deltaY = 0;
         targetBlock.currentHeight = targetBlock.originalHeight;
       }
-    } else if (targetBlock.text !== targetBlock.originalText) {
+    } else if (targetBlock.text !== targetBlock.originalText || targetBlock.isMoved) {
       targetBlock.isEdited = true;
       editedBlocksState[targetBlock.id] = {
         newText: targetBlock.text,
         deltaY: targetBlock.deltaY,
-        currentHeight: targetBlock.currentHeight || targetBlock.originalHeight
+        currentHeight: targetBlock.currentHeight || targetBlock.originalHeight,
+        customX: targetBlock.customX,
+        customY: targetBlock.customY,
+        isMoved: targetBlock.isMoved
       };
     } else {
       targetBlock.isEdited = false;
@@ -733,6 +849,11 @@ function revertBlock(block) {
   delete editedBlocksState[block.id];
   block.text = block.originalText;
   block.isEdited = false;
+  block.isMoved = false;
+  block.customX = undefined;
+  block.customY = undefined;
+  block.x = block.originalX;
+  block.y = block.originalY;
   block.deltaY = 0;
   block.currentHeight = block.originalHeight;
 
@@ -756,28 +877,45 @@ function buildRedactionPayload() {
   for (const [pageNumStr, blocks] of Object.entries(pageBlocksMap.value)) {
     const pageNumber = Number(pageNumStr);
     const pageRot = userRotations.value[pageNumber] || 0;
+    const vp = pageViewports.value[pageNumber];
+    const scale = vp ? (vp.width / (vp.rawWidth || 595.28)) : props.zoom;
 
     for (const block of blocks) {
       const isActivelyEditing = editingBlockId.value === block.id;
-      const isEdited = isBlockEdited(block) || isActivelyEditing;
+      const isMoved = Boolean(block.isMoved && (block.customX != null || block.customY != null));
+      const isEdited = isBlockEdited(block) || isActivelyEditing || isMoved;
       if (!isEdited) continue;
 
       const currentText = isActivelyEditing ? activeBlockText.value : block.text;
-      if (currentText === block.originalText && !isActivelyEditing) continue;
+      if (currentText === block.originalText && !isActivelyEditing && !isMoved) continue;
 
-      const rawBbox = [
+      const rawOriginalBbox = [
         block.originalPdfX,
         block.originalPdfY,
         block.originalPdfWidth,
         block.originalPdfHeight
       ];
-      const effectiveBbox = getRotatedBbox(rawBbox, pageNumber);
+      const effectiveOriginalBbox = getRotatedBbox(rawOriginalBbox, pageNumber);
+
+      const targetX = block.customX != null ? block.customX : block.originalX;
+      const targetY = block.customY != null ? block.customY : block.y;
+
+      const rawNewBbox = [
+        targetX / scale,
+        targetY / scale,
+        block.originalPdfWidth,
+        block.originalPdfHeight
+      ];
+      const effectiveNewBbox = getRotatedBbox(rawNewBbox, pageNumber);
 
       allEdits.push({
         id: `redact-block-${block.id}`,
         lineId: block.id,
         pageNumber,
-        bbox: effectiveBbox,
+        bbox: effectiveNewBbox,
+        originalBbox: effectiveOriginalBbox,
+        originalBoundingBox: effectiveOriginalBbox,
+        isMoved,
         originalText: block.originalText,
         newText: currentText,
         style: {
@@ -1323,9 +1461,16 @@ function extractParagraphBlocks(pageNumber, textContent, viewport) {
     if (editedBlocksState[block.id]) {
       const state = editedBlocksState[block.id];
       block.text = state.newText;
-      block.isEdited = (block.text !== block.originalText);
+      block.isEdited = (block.text !== block.originalText) || Boolean(state.isMoved);
       block.deltaY = state.deltaY || 0;
       block.currentHeight = state.currentHeight || block.originalHeight;
+      if (state.isMoved) {
+        block.isMoved = true;
+        block.customX = state.customX;
+        block.customY = state.customY;
+        block.x = state.customX;
+        block.y = state.customY;
+      }
     }
   }
 
@@ -1611,6 +1756,10 @@ watch(
 );
 
 onMounted(async () => {
+  if (typeof window !== 'undefined') {
+    window.__buildRedactionPayload = buildRedactionPayload;
+    window.__documentStore = documentStore;
+  }
   if (documentStore.originalPdfData && documentStore.originalPdfData.byteLength > 0) {
     await renderAllPages();
   }
@@ -1798,6 +1947,66 @@ defineExpose({
   border: 1px dashed #10b981;
   background-color: #ffffff;
   z-index: 25;
+}
+
+.wps-paragraph-block.is-moved {
+  border: 1.5px dashed #8b5cf6;
+  background-color: #ffffff;
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.15);
+  z-index: 25;
+}
+
+.wps-paragraph-block.is-dragging {
+  cursor: grabbing !important;
+  opacity: 0.92;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.3);
+  border: 1.5px dashed #2563eb !important;
+  z-index: 50 !important;
+}
+
+/* 4-Way Move / Drag Handle UI */
+.block-drag-handle {
+  position: absolute;
+  top: -15px;
+  left: -1px;
+  width: 20px;
+  height: 15px;
+  background-color: #3b82f6;
+  color: #ffffff;
+  border-radius: 3px 3px 0 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  z-index: 40;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.block-drag-handle:hover {
+  background-color: #1d4ed8;
+  transform: scale(1.05);
+}
+
+.block-drag-handle:active,
+.wps-paragraph-block.is-dragging .block-drag-handle {
+  cursor: grabbing;
+  background-color: #1e40af;
+}
+
+.wps-paragraph-block:hover .block-drag-handle,
+.wps-paragraph-block.is-active .block-drag-handle,
+.wps-paragraph-block.is-editing .block-drag-handle,
+.wps-paragraph-block.is-dragging .block-drag-handle {
+  display: flex;
+}
+
+.icon-drag-move {
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
 }
 
 .wps-paragraph-block.is-blank-line,

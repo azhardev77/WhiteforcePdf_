@@ -28,6 +28,9 @@ public class TextRedactionEdit {
     private int pageRotation = 0;
     private String lineId;
     private boolean reflowed = false;
+    private double[] originalBbox;
+    private double[] originalBoundingBox;
+    private boolean isMoved = false;
 
     public TextRedactionEdit() {
         this.pageNumber = 1;
@@ -164,6 +167,35 @@ public class TextRedactionEdit {
 
     public void setReflowed(boolean reflowed) {
         this.reflowed = reflowed;
+    }
+
+    public double[] getOriginalBbox() {
+        if (originalBbox != null) return originalBbox;
+        if (originalBoundingBox != null) return originalBoundingBox;
+        return bbox;
+    }
+
+    public void setOriginalBbox(double[] originalBbox) {
+        this.originalBbox = originalBbox;
+    }
+
+    public double[] getOriginalBoundingBox() {
+        return getOriginalBbox();
+    }
+
+    public void setOriginalBoundingBox(double[] originalBoundingBox) {
+        this.originalBoundingBox = originalBoundingBox;
+        if (this.originalBbox == null) {
+            this.originalBbox = originalBoundingBox;
+        }
+    }
+
+    public boolean isMoved() {
+        return isMoved;
+    }
+
+    public void setMoved(boolean moved) {
+        this.isMoved = moved;
     }
 
     @Override
