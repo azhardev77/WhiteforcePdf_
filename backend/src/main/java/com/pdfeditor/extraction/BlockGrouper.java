@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public class BlockGrouper {
 
@@ -57,8 +58,30 @@ public class BlockGrouper {
             boolean typeChanged = (lineType != currentBlockType);
             boolean isHeadingBlock = (currentBlockType == BlockType.HEADING);
 
-            // A new block is triggered if gap > fontSize * 1.5, or type changed, or heading block finished
-            if (gapExceeded || typeChanged || isHeadingBlock) {
+            // Fix 2 & 3: Strict Vertical Paragraph Merging Rules
+            double fontDiff = Math.abs(currentLine.getPrimaryFontSize() - prevLine.getPrimaryFontSize());
+            boolean fontMismatch = fontDiff > 1.5;
+
+            double xDiff = Math.abs(currentLine.getX() - prevLine.getX());
+            double right1 = prevLine.getX() + prevLine.getWidth();
+            double right2 = currentLine.getX() + currentLine.getWidth();
+            boolean isLeftAligned = xDiff <= 6.0;
+
+            // Fix 3: Staggered / right-aligned contact lines, links, emails, and bullet points MUST NEVER merge!
+            boolean isContactOrSpecial = isContactOrList(prevLine.getText()) || isContactOrList(currentLine.getText());
+            boolean isRightSide = prevLine.getX() > 200.0 || currentLine.getX() > 200.0;
+            boolean isProseWidth = (prevLine.getWidth() >= 60.0 && currentLine.getWidth() >= 60.0);
+            if (isRightSide) {
+                isProseWidth = (prevLine.getWidth() >= 200.0 && currentLine.getWidth() >= 200.0);
+            }
+            boolean colorMismatch = !Objects.equals(prevLine.getPrimaryColor(), currentLine.getPrimaryColor());
+
+            boolean horizontallyDisjoint = (currentLine.getX() >= right1 + 10.0) || (prevLine.getX() >= right2 + 10.0);
+            boolean verticalOverlap = (gap < -2.0);
+
+            // A new block is triggered if gap > fontSize * 1.5, or type changed, or heading block finished,
+            // or font size mismatch, or not left-aligned, or special/contact line, or not prose width, or color mismatch, or side-by-side lines
+            if (gapExceeded || typeChanged || isHeadingBlock || fontMismatch || !isLeftAligned || isContactOrSpecial || !isProseWidth || colorMismatch || horizontallyDisjoint || verticalOverlap) {
                 blocks.add(buildBlock(currentBlockLines, currentBlockType, baseFontSize));
                 currentBlockLines.clear();
                 currentBlockLines.add(currentLine);
@@ -192,5 +215,18 @@ public class BlockGrouper {
         } else {
             return new ParagraphBlock(bbox, allRuns, "left");
         }
+    }
+
+    private boolean isContactOrList(String text) {
+        if (text == null || text.isBlank()) return false;
+        String t = text.trim();
+        if (t.startsWith("•") || t.startsWith("-") || t.startsWith("*") || t.matches("^(\\d+[.)]|\\([a-zA-Z0-9]+\\))\\s+.*")) {
+            return true;
+        }
+        String lower = t.toLowerCase();
+        if (lower.contains("@") || lower.contains("linkedin") || lower.contains("github") || lower.contains("leetcode") || lower.contains("scaler") || lower.contains("portfolio") || lower.contains("phone") || lower.matches(".*\\+\\d{2}.*")) {
+            return true;
+        }
+        return false;
     }
 }

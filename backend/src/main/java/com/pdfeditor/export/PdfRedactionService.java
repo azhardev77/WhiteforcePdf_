@@ -90,7 +90,8 @@ public class PdfRedactionService {
                     boolean italic = style != null && style.italic();
                     float fontSize = (style != null && style.fontSize() > 0) ? (float) style.fontSize() : 11.0f;
                     Color textColor = parseColor(style != null ? style.color() : "#000000", Color.BLACK);
-                    PDFont font = selectFont(bold, italic);
+                    String fontFamily = style != null ? style.fontFamily() : null;
+                    PDFont font = selectFont(fontFamily, bold, italic);
                     float lineHeight = fontSize * LINE_HEIGHT_FACTOR;
 
                     // Wrapping ke liye maximum width:
@@ -123,18 +124,41 @@ public class PdfRedactionService {
                     // Step 1: Pehle original text ko white/background box se मिटाएं (Redact)
                     // Fix 2: Exact text box height to strictly preserve underlines and border vectors directly below
                     if (!edit.isTransparentBackground()) {
-                        float padX = 0.5f;
-                        float rectX = originX + whiteoutX - padX;
-                        float rectW = whiteoutW + (padX * 2f);
-                        float rectY = originY + (pageH - whiteoutY - whiteoutH);
-                        float rectH = whiteoutH;
+                        if (edit.getWhiteoutBoxes() != null && !edit.getWhiteoutBoxes().isEmpty()) {
+                            for (double[] wBox : edit.getWhiteoutBoxes()) {
+                                double[] pdfWBox = toUnrotatedPdfCoords(wBox, edit.getPageRotation(), pageW, pageH);
+                                float wx = (float) pdfWBox[0];
+                                float wy = (float) pdfWBox[1];
+                                float ww = (float) pdfWBox[2];
+                                float wh = (float) pdfWBox[3];
+                                float padX = 0.5f;
+                                float rectX = originX + wx - padX;
+                                float rectW = ww + (padX * 2f);
+                                float rectY = originY + (pageH - wy - wh);
+                                float rectH = wh;
 
-                        try (PDPageContentStream cs = new PDPageContentStream(
-                                doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
-                            Color bgColor = parseColor(edit.getBackgroundColor(), Color.WHITE);
-                            cs.setNonStrokingColor(bgColor);
-                            cs.addRect(rectX, rectY, rectW, rectH);
-                            cs.fill();
+                                try (PDPageContentStream cs = new PDPageContentStream(
+                                        doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
+                                    Color bgColor = parseColor(edit.getBackgroundColor(), Color.WHITE);
+                                    cs.setNonStrokingColor(bgColor);
+                                    cs.addRect(rectX, rectY, rectW, rectH);
+                                    cs.fill();
+                                }
+                            }
+                        } else {
+                            float padX = 0.5f;
+                            float rectX = originX + whiteoutX - padX;
+                            float rectW = whiteoutW + (padX * 2f);
+                            float rectY = originY + (pageH - whiteoutY - whiteoutH);
+                            float rectH = whiteoutH;
+
+                            try (PDPageContentStream cs = new PDPageContentStream(
+                                    doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
+                                Color bgColor = parseColor(edit.getBackgroundColor(), Color.WHITE);
+                                cs.setNonStrokingColor(bgColor);
+                                cs.addRect(rectX, rectY, rectW, rectH);
+                                cs.fill();
+                            }
                         }
                     } else if (edit.getOriginalText() != null && edit.getOriginalText().matches("^[\\s,.;:\\-_–—]+$") && !edit.getOriginalText().trim().isEmpty()) {
                         // For blank lines with trailing comma/punctuation, only whiteout the tiny ~10px area of the punctuation itself at the right end
@@ -348,14 +372,22 @@ public class PdfRedactionService {
         }
     }
 
-    private PDFont selectFont(boolean bold, boolean italic) {
-        if (bold && italic) {
-            return new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD_OBLIQUE);
-        } else if (bold) {
-            return new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD);
-        } else if (italic) {
-            return new PDType1Font(Standard14Fonts.FontName.HELVETICA_OBLIQUE);
+    private PDFont selectFont(String fontFamily, boolean bold, boolean italic) {
+        String fn = fontFamily != null ? fontFamily.toLowerCase() : "";
+        if (fn.contains("times") || fn.contains("serif") || fn.contains("roman")) {
+            if (bold && italic) return new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD_ITALIC);
+            if (bold) return new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD);
+            if (italic) return new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
+            return new PDType1Font(Standard14Fonts.FontName.TIMES_ROMAN);
+        } else if (fn.contains("courier") || fn.contains("mono")) {
+            if (bold && italic) return new PDType1Font(Standard14Fonts.FontName.COURIER_BOLD_OBLIQUE);
+            if (bold) return new PDType1Font(Standard14Fonts.FontName.COURIER_BOLD);
+            if (italic) return new PDType1Font(Standard14Fonts.FontName.COURIER_OBLIQUE);
+            return new PDType1Font(Standard14Fonts.FontName.COURIER);
         } else {
+            if (bold && italic) return new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD_OBLIQUE);
+            if (bold) return new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD);
+            if (italic) return new PDType1Font(Standard14Fonts.FontName.HELVETICA_OBLIQUE);
             return new PDType1Font(Standard14Fonts.FontName.HELVETICA);
         }
     }

@@ -31,6 +31,7 @@ public class TextRedactionEdit {
     private double[] originalBbox;
     private double[] originalBoundingBox;
     private boolean isMoved = false;
+    private java.util.List<double[]> whiteoutBoxes;
 
     public TextRedactionEdit() {
         this.pageNumber = 1;
@@ -196,6 +197,14 @@ public class TextRedactionEdit {
 
     public void setMoved(boolean moved) {
         this.isMoved = moved;
+    }
+
+    public java.util.List<double[]> getWhiteoutBoxes() {
+        return whiteoutBoxes;
+    }
+
+    public void setWhiteoutBoxes(java.util.List<double[]> whiteoutBoxes) {
+        this.whiteoutBoxes = whiteoutBoxes;
     }
 
     @Override

@@ -94,6 +94,24 @@ public class Line {
         return false;
     }
 
+    public String getPrimaryColor() {
+        if (runs != null) {
+            for (TextRun run : runs) {
+                if (run.getStyle() != null && run.getStyle().color() != null && !run.getStyle().color().isBlank()) {
+                    return run.getStyle().color();
+                }
+            }
+        }
+        if (words != null) {
+            for (Word word : words) {
+                if (word.getStyle() != null && word.getStyle().color() != null && !word.getStyle().color().isBlank()) {
+                    return word.getStyle().color();
+                }
+            }
+        }
+        return "#000000";
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o)

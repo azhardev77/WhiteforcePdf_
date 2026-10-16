@@ -133,7 +133,7 @@
 
             <button
               type="button"
-              class="btn-sample-doc"
+              class="btn-sample-doc btn-sample-tender"
               @click="loadSampleDocument"
             >
               <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -141,6 +141,19 @@
                 <polyline points="14 2 14 8 20 8" />
               </svg>
               <span>Open Tender RFQ PDF</span>
+            </button>
+
+            <button
+              type="button"
+              class="btn-sample-doc btn-sample-resume"
+              @click="loadResumeDocument"
+            >
+              <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="8.5" cy="7" r="4" />
+                <polyline points="17 11 19 13 23 9" />
+              </svg>
+              <span>Open Resume PDF</span>
             </button>
           </div>
 
@@ -230,6 +243,14 @@ async function uploadFile(file) {
 async function loadSampleDocument() {
   try {
     await documentStore.loadSample('sample.pdf');
+  } catch {
+    // Error is set in store
+  }
+}
+
+async function loadResumeDocument() {
+  try {
+    await documentStore.loadSample('resume.pdf');
   } catch {
     // Error is set in store
   }

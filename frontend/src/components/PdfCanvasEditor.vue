@@ -93,6 +93,7 @@
                 :data-text="block.text"
                 :data-is-blank-line="block.isBlankLine ? 'true' : 'false'"
                 :data-is-moved="block.isMoved ? 'true' : 'false'"
+                :data-font-size="block.viewportFontSize"
                 :title="block.text"
                 class="wps-paragraph-block overlay-text-box"
                 :class="{
@@ -110,6 +111,89 @@
                 @pointerdown="onBlockPointerDown(block, $event)"
                 @click.stop="onParagraphClick(block, $event)"
               >
+                <!-- Floating Formatting Mini-Toolbar on Active / Editing Block -->
+                <div
+                  v-if="editingBlockId === block.id || documentStore.activeBlockId === block.id"
+                  class="block-floating-toolbar"
+                  data-testid="block-floating-toolbar"
+                  @pointerdown.stop
+                  @mousedown.stop.prevent
+                >
+                  <button
+                    type="button"
+                    class="btn-toolbar-tool btn-font-dec"
+                    title="Decrease font size by 1pt (A-)"
+                    @mousedown.prevent="decreaseFontSize(block)"
+                  >
+                    A-
+                  </button>
+
+                  <input
+                    type="number"
+                    class="toolbar-font-size-input"
+                    title="Font size (pt)"
+                    :value="Math.round(block.customFontSize || block.fontSize || (block.viewportFontSize / (props.zoom || 1)))"
+                    min="6"
+                    max="120"
+                    @mousedown.stop
+                    @change="e => changeBlockFontSize(block, Number(e.target.value))"
+                  />
+
+                  <button
+                    type="button"
+                    class="btn-toolbar-tool btn-font-inc"
+                    title="Increase font size by 1pt (A+)"
+                    @mousedown.prevent="increaseFontSize(block)"
+                  >
+                    A+
+                  </button>
+
+                  <div class="toolbar-divider" />
+
+                  <button
+                    type="button"
+                    class="btn-toolbar-tool btn-font-bold"
+                    :class="{ 'is-active': block.bold }"
+                    title="Bold (B)"
+                    @mousedown.prevent="toggleBold(block)"
+                  >
+                    <b>B</b>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="btn-toolbar-tool btn-font-italic"
+                    :class="{ 'is-active': block.italic }"
+                    title="Italic (I)"
+                    @mousedown.prevent="toggleItalic(block)"
+                  >
+                    <i>I</i>
+                  </button>
+
+                  <div class="toolbar-divider" />
+
+                  <label class="toolbar-color-label" title="Change text color">
+                    <input
+                      type="color"
+                      class="toolbar-color-input"
+                      :value="getBlockColorHex(block)"
+                      @mousedown.stop
+                      @input="e => setBlockColor(block, e.target.value)"
+                    />
+                    <span class="color-preview-pip" :style="{ backgroundColor: getBlockColorHex(block) }" />
+                  </label>
+
+                  <button
+                    v-if="isBlockEdited(block)"
+                    type="button"
+                    class="btn-toolbar-tool btn-toolbar-revert"
+                    title="Revert paragraph (1 click)"
+                    @mousedown.prevent="revertBlock(block)"
+                  >
+                    ↺
+                  </button>
+                </div>
+
                 <!-- 4-Way Drag & Move Handle (Visible on hover or active/editing) -->
                 <div
                   class="block-drag-handle"
@@ -121,6 +205,15 @@
                     <path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/>
                   </svg>
                 </div>
+
+                <!-- Corner Resize Handle (Visible when active/editing) -->
+                <div
+                  v-if="editingBlockId === block.id || documentStore.activeBlockId === block.id"
+                  class="block-resize-handle"
+                  data-testid="block-resize-handle"
+                  title="Drag to resize block"
+                  @pointerdown.stop.prevent="startResizeBlock(block, $event)"
+                />
 
                 <!-- Screen-reader and locator text representation: always present in all states -->
                 <span class="sr-only-block-text">{{ editingBlockId === block.id ? activeBlockText : block.text }}</span>
@@ -274,7 +367,12 @@ function isBlockEdited(block) {
   if (block.isBlankLine) {
     return Boolean(block.isEdited && block.text && block.text.trim());
   }
-  return Boolean(block.isEdited && block.text !== block.originalText);
+  const hasStyleChange = (block.customFontSize != null) ||
+                         (block.customColor != null) ||
+                         (block.customWidth != null) ||
+                         (block.bold !== block.originalBold) ||
+                         (block.italic !== block.originalItalic);
+  return Boolean(block.isEdited && (block.text !== block.originalText || hasStyleChange));
 }
 
 function getPageEditCount(pageIndex) {
@@ -314,12 +412,316 @@ function getRotatedBbox(bbox, pageNumber) {
   return [...bbox];
 }
 
-function getMaxAllowedWidth(block) {
+function getMaxAvailableWidth(block) {
+  const pageBlocks = pageBlocksMap.value[block.pageNumber] || [];
   const vp = pageViewports.value[block.pageNumber];
   const pageW = vp ? vp.width : 600;
-  const rightMargin = 36 * props.zoom;
-  const posX = block.customX != null ? block.customX : block.originalX;
-  return Math.max(block.originalWidth, pageW - posX - rightMargin);
+  const currentLeft = block.customX != null ? block.customX : block.originalX;
+  const currentY = block.customY != null ? block.customY : block.originalY;
+  const currentH = block.originalHeight || 20;
+
+  // Find blocks on the same horizontal band (Y overlap) that are to the right of current block
+  const rightCandidates = pageBlocks.filter(b => {
+    if (b.id === block.id) return false;
+    const bLeft = b.customX != null ? b.customX : b.originalX;
+    const bY = b.customY != null ? b.customY : b.originalY;
+    const bH = b.originalHeight || 20;
+    const bBottom = bY + bH;
+    const currentBottom = currentY + currentH;
+    const yOverlap = Math.max(0, Math.min(bBottom, currentBottom) - Math.max(bY, currentY));
+    return bLeft > currentLeft && yOverlap > 4;
+  });
+
+  if (rightCandidates.length > 0) {
+    rightCandidates.sort((a, b) => {
+      const aLeft = a.customX != null ? a.customX : a.originalX;
+      const bLeft = b.customX != null ? b.customX : b.originalX;
+      return aLeft - bLeft;
+    });
+    const nextOnRight = rightCandidates[0];
+    const nextLeft = nextOnRight.customX != null ? nextOnRight.customX : nextOnRight.originalX;
+    return Math.max(block.originalWidth, nextLeft - currentLeft - (12 * (props.zoom || 1)));
+  }
+
+  return Math.max(block.originalWidth, pageW - currentLeft - (24 * (props.zoom || 1)));
+}
+
+function getMaxAllowedWidth(block) {
+  return getMaxAvailableWidth(block);
+}
+
+let _measureCanvas = null;
+function measureTextWidth(text, fontSize, fontName, bold, italic) {
+  if (!text) return 20;
+  if (typeof document === 'undefined') return text.length * fontSize * 0.6;
+  if (!_measureCanvas) {
+    _measureCanvas = document.createElement('canvas');
+  }
+  const ctx = _measureCanvas.getContext('2d');
+  const weight = bold ? 'bold' : 'normal';
+  const style = italic ? 'italic' : 'normal';
+  ctx.font = `${style} ${weight} ${Math.round(fontSize)}px ${fontName || 'Helvetica, Arial, sans-serif'}`;
+  return ctx.measureText(text).width;
+}
+
+function rgbToHex(r, g, b) {
+  const toHex = (n) => Math.min(255, Math.max(0, Math.round(n))).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function mapPdfFontToCssFamily(fontName) {
+  if (!fontName) return 'Helvetica, Arial, sans-serif';
+  const lower = fontName.toLowerCase();
+  if (lower.includes('times') || lower.includes('roman') || lower.includes('georgia') || lower.includes('serif')) {
+    return 'Times New Roman, Georgia, serif';
+  }
+  if (lower.includes('courier') || lower.includes('mono')) {
+    return 'Courier New, monospace';
+  }
+  if (lower.includes('calibri')) {
+    return 'Calibri, Candara, Segoe UI, sans-serif';
+  }
+  if (lower.includes('inter')) {
+    return 'Inter, sans-serif';
+  }
+  if (lower.includes('arial')) {
+    return 'Arial, Helvetica, sans-serif';
+  }
+  return 'Helvetica, Arial, sans-serif';
+}
+
+function isFontBold(fontName) {
+  if (!fontName) return false;
+  const lower = fontName.toLowerCase();
+  return lower.includes('bold') || lower.includes('medi') || lower.includes('semibold') || lower.includes('heavy') || lower.includes('black') || lower.includes('700');
+}
+
+function isFontItalic(fontName) {
+  if (!fontName) return false;
+  const lower = fontName.toLowerCase();
+  return lower.includes('italic') || lower.includes('oblique');
+}
+
+function getBlockColorHex(block) {
+  if (!block) return '#000000';
+  return block.customColor || block.originalColor || block.color || '#000000';
+}
+
+function sampleTextColorFromCanvas(pristineCanvas, x, y, width, height, dpr = 1) {
+  if (!pristineCanvas || width <= 0 || height <= 0) return null;
+  const ctx = pristineCanvas.getContext('2d');
+  if (!ctx) return null;
+
+  try {
+    const sx = Math.max(0, Math.floor(x * dpr));
+    const sy = Math.max(0, Math.floor(y * dpr));
+    const sw = Math.min(pristineCanvas.width - sx, Math.max(1, Math.floor(width * dpr)));
+    const sh = Math.min(pristineCanvas.height - sy, Math.max(1, Math.floor(height * dpr)));
+    if (sw <= 0 || sh <= 0) return null;
+
+    const imgData = ctx.getImageData(sx, sy, sw, sh);
+    const data = imgData.data;
+
+    let coloredR = 0, coloredG = 0, coloredB = 0, coloredCount = 0;
+    let darkR = 0, darkG = 0, darkB = 0, darkCount = 0;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
+
+      if (a < 80) continue;
+      if (r > 235 && g > 235 && b > 235) continue;
+
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      if (maxC - minC > 25) {
+        coloredR += r;
+        coloredG += g;
+        coloredB += b;
+        coloredCount++;
+      } else {
+        darkR += r;
+        darkG += g;
+        darkB += b;
+        darkCount++;
+      }
+    }
+
+    if (coloredCount >= 6 || (coloredCount > 0 && coloredCount >= darkCount * 0.12)) {
+      return rgbToHex(coloredR / coloredCount, coloredG / coloredCount, coloredB / coloredCount);
+    }
+    if (darkCount > 0) {
+      return rgbToHex(darkR / darkCount, darkG / darkCount, darkB / darkCount);
+    }
+  } catch (err) {
+    console.warn('Canvas pixel color sampling failed:', err);
+  }
+  return null;
+}
+
+function decreaseFontSize(block) {
+  const currentSize = Math.round(block.customFontSize || block.fontSize || (block.viewportFontSize / (props.zoom || 1)));
+  const newSize = Math.max(6, currentSize - 1);
+  changeBlockFontSize(block, newSize);
+}
+
+function increaseFontSize(block) {
+  const currentSize = Math.round(block.customFontSize || block.fontSize || (block.viewportFontSize / (props.zoom || 1)));
+  const newSize = Math.min(120, currentSize + 1);
+  changeBlockFontSize(block, newSize);
+}
+
+function changeBlockFontSize(block, newSize) {
+  if (!newSize || newSize < 6 || newSize > 120) return;
+  block.customFontSize = newSize;
+  block.fontSize = newSize;
+  block.viewportFontSize = newSize * (props.zoom || 1);
+  block.isEdited = true;
+
+  const isSingleLine = !block.lines || block.lines.length <= 1;
+  if (isSingleLine && !block.customWidth) {
+    const maxW = getMaxAvailableWidth(block);
+    const currentText = editingBlockId.value === block.id ? activeBlockText.value : block.text;
+    const measured = measureTextWidth(currentText, block.viewportFontSize, block.fontFamily, block.bold, block.italic) + 16;
+    block.width = Math.min(maxW, Math.max(block.originalWidth, measured));
+  }
+
+  if (editingBlockId.value === block.id) {
+    nextTick(() => {
+      let el = activeBlockTextareaRef.value;
+      if (Array.isArray(el)) el = el[0];
+      if (el) {
+        el.style.height = 'auto';
+        const scrollH = el.scrollHeight;
+        const baseH = block.originalHeight;
+        const currentH = Math.max(scrollH, baseH);
+        el.style.height = `${currentH}px`;
+        const extraH = Math.max(0, currentH - baseH);
+        block.deltaY = extraH;
+        block.currentHeight = currentH;
+        activeDeltaY.value = extraH;
+      }
+      updatePageVerticalReflow(block.pageNumber);
+    });
+  } else {
+    reflowVersion.value++;
+    updatePageVerticalReflow(block.pageNumber);
+  }
+
+  editedBlocksState[block.id] = {
+    ...(editedBlocksState[block.id] || {}),
+    newText: block.text,
+    deltaY: block.deltaY || 0,
+    currentHeight: block.currentHeight || block.originalHeight,
+    customFontSize: block.customFontSize,
+    customColor: block.customColor,
+    customWidth: block.customWidth,
+    bold: block.bold,
+    italic: block.italic
+  };
+
+  const edits = buildRedactionPayload();
+  documentStore.setEdits(edits);
+}
+
+function toggleBold(block) {
+  block.bold = !block.bold;
+  block.isEdited = isBlockEdited(block);
+  reflowVersion.value++;
+  editedBlocksState[block.id] = {
+    ...(editedBlocksState[block.id] || {}),
+    newText: block.text,
+    deltaY: block.deltaY || 0,
+    currentHeight: block.currentHeight || block.originalHeight,
+    bold: block.bold,
+    italic: block.italic
+  };
+  const edits = buildRedactionPayload();
+  documentStore.setEdits(edits);
+}
+
+function toggleItalic(block) {
+  block.italic = !block.italic;
+  block.isEdited = isBlockEdited(block);
+  reflowVersion.value++;
+  editedBlocksState[block.id] = {
+    ...(editedBlocksState[block.id] || {}),
+    newText: block.text,
+    deltaY: block.deltaY || 0,
+    currentHeight: block.currentHeight || block.originalHeight,
+    bold: block.bold,
+    italic: block.italic
+  };
+  const edits = buildRedactionPayload();
+  documentStore.setEdits(edits);
+}
+
+function setBlockColor(block, hexColor) {
+  if (!hexColor) return;
+  block.customColor = hexColor;
+  block.color = hexColor;
+  block.isEdited = true;
+  reflowVersion.value++;
+  editedBlocksState[block.id] = {
+    ...(editedBlocksState[block.id] || {}),
+    newText: block.text,
+    deltaY: block.deltaY || 0,
+    currentHeight: block.currentHeight || block.originalHeight,
+    customColor: hexColor
+  };
+  const edits = buildRedactionPayload();
+  documentStore.setEdits(edits);
+}
+
+function startResizeBlock(block, event) {
+  if (event.button !== 0) return;
+  const startX = event.clientX;
+  const startW = block.customWidth || block.width || block.originalWidth;
+  const maxW = getMaxAvailableWidth(block);
+
+  function onResizeMove(e) {
+    const dx = e.clientX - startX;
+    const newW = Math.min(maxW, Math.max(30, startW + dx));
+    block.customWidth = newW;
+    block.width = newW;
+    block.isEdited = true;
+    reflowVersion.value++;
+  }
+
+  function onResizeUp() {
+    window.removeEventListener('pointermove', onResizeMove);
+    window.removeEventListener('pointerup', onResizeUp);
+    window.removeEventListener('pointercancel', onResizeUp);
+
+    editedBlocksState[block.id] = {
+      ...(editedBlocksState[block.id] || {}),
+      newText: block.text,
+      deltaY: block.deltaY || 0,
+      currentHeight: block.currentHeight || block.originalHeight,
+      customWidth: block.customWidth
+    };
+    const edits = buildRedactionPayload();
+    documentStore.setEdits(edits);
+  }
+
+  window.addEventListener('pointermove', onResizeMove);
+  window.addEventListener('pointerup', onResizeUp);
+  window.addEventListener('pointercancel', onResizeUp);
+}
+
+function isContactOrListLine(text) {
+  if (!text) return false;
+  const t = text.trim();
+  if (t.startsWith('•') || t.startsWith('-') || t.startsWith('*') || /^(\d+[\.\)]|\([a-zA-Z0-9]+\))\s+/.test(t)) {
+    return true;
+  }
+  const lower = t.toLowerCase();
+  if (lower.includes('@') || lower.includes('linkedin') || lower.includes('github') || lower.includes('leetcode') || lower.includes('scaler') || lower.includes('portfolio') || lower.includes('phone') || /\+\d{2}/.test(lower)) {
+    return true;
+  }
+  return false;
 }
 
 function getPageExpandedEdits(pageNumber) {
@@ -456,28 +858,54 @@ function getPageWhiteoutMasks(pageIndex) {
       continue;
     }
 
-    masks.push({
-      id: `mask-${block.id}`,
-      style: {
-        left: `${Math.round(block.originalX - 1)}px`,
-        top: `${Math.round(block.originalY - 1)}px`,
-        width: `${Math.round(block.originalWidth + 3)}px`,
-        height: `${Math.round(block.originalHeight + 2)}px`
+    if (block.lines && block.lines.length > 1) {
+      for (let lIdx = 0; lIdx < block.lines.length; lIdx++) {
+        const line = block.lines[lIdx];
+        masks.push({
+          id: lIdx === 0 ? `mask-${block.id}` : `mask-${block.id}-l${lIdx}`,
+          style: {
+            left: `${Math.round(line.originalX || line.x)}px`,
+            top: `${Math.round(line.originalY || line.y)}px`,
+            width: `${Math.round((line.originalWidth || line.width) + 1)}px`,
+            height: `${Math.round((line.originalHeight || line.height) + 1)}px`
+          }
+        });
       }
-    });
+    } else {
+      masks.push({
+        id: `mask-${block.id}`,
+        style: {
+          left: `${Math.round(block.originalX)}px`,
+          top: `${Math.round(block.originalY)}px`,
+          width: `${Math.round(block.originalWidth + 1)}px`,
+          height: `${Math.round(block.originalHeight + 1)}px`
+        }
+      });
+    }
   }
   return masks;
 }
 
 function getParagraphBlockStyle(block) {
   const _ = reflowVersion.value;
-  const maxW = getMaxAllowedWidth(block);
+  const maxW = getMaxAvailableWidth(block);
   const isEditing = editingBlockId.value === block.id;
   const isEdited = isBlockEdited(block);
   const heightPx = (isEditing || isEdited)
-    ? Math.max((isEditing ? (activeDeltaY.value + block.originalHeight) : block.currentHeight) || block.originalHeight, 16)
+    ? Math.max((isEditing ? (activeDeltaY.value + block.originalHeight) : block.currentHeight) || block.originalHeight, block.originalHeight)
     : block.originalHeight;
-  const widthPx = Math.max(block.originalWidth, 30);
+
+  const isSingleLine = !block.lines || block.lines.length <= 1;
+  let widthPx = block.customWidth;
+  if (!widthPx) {
+    if (isSingleLine && (isEditing || isEdited)) {
+      const currentText = isEditing ? activeBlockText.value : block.text;
+      const measured = measureTextWidth(currentText, block.viewportFontSize, block.fontFamily, block.bold, block.italic) + 16;
+      widthPx = Math.min(maxW, Math.max(block.originalWidth, measured));
+    } else {
+      widthPx = Math.max(block.originalWidth, 20);
+    }
+  }
 
   const posX = block.customX != null ? block.customX : block.originalX;
   const posY = block.customY != null ? block.customY : block.y;
@@ -488,6 +916,11 @@ function getParagraphBlockStyle(block) {
     width: `${Math.round(widthPx)}px`,
     maxWidth: `${Math.round(maxW)}px`,
     height: `${Math.round(heightPx)}px`,
+    fontSize: `${block.viewportFontSize}px`,
+    fontFamily: block.fontFamily || block.fontName || 'Helvetica, Arial, sans-serif',
+    fontWeight: block.bold ? 'bold' : 'normal',
+    fontStyle: block.italic ? 'italic' : 'normal',
+    color: getBlockColorHex(block),
     zIndex: isEditing ? 35 : (isEdited ? 25 : 15)
   };
 
@@ -501,13 +934,13 @@ function getParagraphBlockStyle(block) {
 function getParagraphTextareaStyle(block) {
   const linePitch = (block.lines && block.lines.length > 1)
     ? (block.originalHeight / block.lines.length)
-    : Math.max(block.viewportFontSize * 1.25, 16);
+    : (block.viewportFontSize * 1.20);
   return {
     fontSize: `${block.viewportFontSize}px`,
-    fontFamily: block.fontName || 'Helvetica, Arial, sans-serif',
+    fontFamily: block.fontFamily || block.fontName || 'Helvetica, Arial, sans-serif',
     fontWeight: block.bold ? 'bold' : 'normal',
     fontStyle: block.italic ? 'italic' : 'normal',
-    color: block.color || '#000000',
+    color: getBlockColorHex(block),
     lineHeight: `${Math.round(linePitch)}px`
   };
 }
@@ -515,13 +948,13 @@ function getParagraphTextareaStyle(block) {
 function getParagraphDisplayStyle(block) {
   const linePitch = (block.lines && block.lines.length > 1)
     ? (block.originalHeight / block.lines.length)
-    : Math.max(block.viewportFontSize * 1.25, 16);
+    : (block.viewportFontSize * 1.20);
   return {
     fontSize: `${block.viewportFontSize}px`,
-    fontFamily: block.fontName || 'Helvetica, Arial, sans-serif',
+    fontFamily: block.fontFamily || block.fontName || 'Helvetica, Arial, sans-serif',
     fontWeight: block.bold ? 'bold' : 'normal',
     fontStyle: block.italic ? 'italic' : 'normal',
-    color: block.color || '#000000',
+    color: getBlockColorHex(block),
     lineHeight: `${Math.round(linePitch)}px`
   };
 }
@@ -695,6 +1128,13 @@ function startEditingBlock(block, event) {
   }
   activeDeltaY.value = block.deltaY || 0;
 
+  const isSingleLine = !block.lines || block.lines.length <= 1;
+  if (isSingleLine && !block.customWidth) {
+    const maxAvail = getMaxAvailableWidth(block);
+    const measured = measureTextWidth(activeBlockText.value, block.viewportFontSize, block.fontFamily, block.bold, block.italic) + 16;
+    block.width = Math.min(maxAvail, Math.max(block.originalWidth, measured));
+  }
+
   documentStore.activeBlockId = block.id;
   emit('select-item', block);
 
@@ -705,7 +1145,8 @@ function startEditingBlock(block, event) {
       el.style.height = 'auto';
       const scrollH = el.scrollHeight;
       const baseH = block.originalHeight;
-      const currentH = Math.max(scrollH, baseH);
+      const isLineWrapped = isSingleLine ? (scrollH > baseH * 1.35) : (scrollH > baseH + 3);
+      const currentH = isLineWrapped ? scrollH : baseH;
       el.style.height = `${currentH}px`;
       const extraH = Math.max(0, currentH - baseH);
       activeDeltaY.value = extraH;
@@ -737,11 +1178,19 @@ function onParagraphInput(block, event) {
     block.isEdited = Boolean(activeBlockText.value && activeBlockText.value.trim());
   }
 
+  const isSingleLine = !block.lines || block.lines.length <= 1;
+  if (isSingleLine && !block.customWidth) {
+    const maxAvail = getMaxAvailableWidth(block);
+    const measuredW = measureTextWidth(activeBlockText.value, block.viewportFontSize, block.fontFamily, block.bold, block.italic) + 16;
+    block.width = Math.min(maxAvail, Math.max(block.originalWidth, measuredW));
+  }
+
   if (el) {
     el.style.height = 'auto';
     const scrollH = el.scrollHeight;
     const baseH = block.originalHeight;
-    const currentH = Math.max(scrollH, baseH);
+    const isLineWrapped = isSingleLine ? (scrollH > baseH * 1.35) : (scrollH > baseH + 3);
+    const currentH = isLineWrapped ? scrollH : baseH;
     el.style.height = `${currentH}px`;
 
     const extraH = Math.max(0, currentH - baseH);
@@ -785,7 +1234,12 @@ function commitActiveBlock() {
         editedBlocksState[targetBlock.id] = {
           newText: targetBlock.text,
           deltaY: targetBlock.deltaY,
-          currentHeight: targetBlock.currentHeight || targetBlock.originalHeight
+          currentHeight: targetBlock.currentHeight || targetBlock.originalHeight,
+          customFontSize: targetBlock.customFontSize,
+          customColor: targetBlock.customColor,
+          customWidth: targetBlock.customWidth,
+          bold: targetBlock.bold,
+          italic: targetBlock.italic
         };
       } else {
         targetBlock.isEdited = false;
@@ -794,7 +1248,7 @@ function commitActiveBlock() {
         targetBlock.deltaY = 0;
         targetBlock.currentHeight = targetBlock.originalHeight;
       }
-    } else if (targetBlock.text !== targetBlock.originalText || targetBlock.isMoved) {
+    } else if (targetBlock.text !== targetBlock.originalText || targetBlock.isMoved || targetBlock.customFontSize || targetBlock.customColor || targetBlock.customWidth || targetBlock.bold !== targetBlock.originalBold || targetBlock.italic !== targetBlock.originalItalic) {
       targetBlock.isEdited = true;
       editedBlocksState[targetBlock.id] = {
         newText: targetBlock.text,
@@ -802,6 +1256,11 @@ function commitActiveBlock() {
         currentHeight: targetBlock.currentHeight || targetBlock.originalHeight,
         customX: targetBlock.customX,
         customY: targetBlock.customY,
+        customFontSize: targetBlock.customFontSize,
+        customColor: targetBlock.customColor,
+        customWidth: targetBlock.customWidth,
+        bold: targetBlock.bold,
+        italic: targetBlock.italic,
         isMoved: targetBlock.isMoved
       };
     } else {
@@ -852,6 +1311,15 @@ function revertBlock(block) {
   block.isMoved = false;
   block.customX = undefined;
   block.customY = undefined;
+  block.customWidth = undefined;
+  block.width = block.originalWidth;
+  block.customFontSize = null;
+  block.fontSize = block.originalFontSize || block.fontSize;
+  block.viewportFontSize = (block.fontSize || 11) * (props.zoom || 1);
+  block.customColor = null;
+  block.color = block.originalColor || '#000000';
+  block.bold = block.originalBold;
+  block.italic = block.originalItalic;
   block.x = block.originalX;
   block.y = block.originalY;
   block.deltaY = 0;
@@ -887,7 +1355,7 @@ function buildRedactionPayload() {
       if (!isEdited) continue;
 
       const currentText = isActivelyEditing ? activeBlockText.value : block.text;
-      if (currentText === block.originalText && !isActivelyEditing && !isMoved) continue;
+      if (currentText === block.originalText && !isActivelyEditing && !isMoved && !block.customFontSize && !block.customColor) continue;
 
       const rawOriginalBbox = [
         block.originalPdfX,
@@ -919,17 +1387,21 @@ function buildRedactionPayload() {
         originalText: block.originalText,
         newText: currentText,
         style: {
-          fontSize: block.fontSize,
-          fontFamily: block.fontName || 'Helvetica',
+          fontSize: block.customFontSize || block.fontSize,
+          fontFamily: block.fontFamily || block.fontName || 'Helvetica',
           bold: Boolean(block.bold),
           italic: Boolean(block.italic),
-          color: block.color || '#000000'
+          color: getBlockColorHex(block)
         },
         backgroundColor: '#FFFFFF',
         transparentBackground: Boolean(block.transparentBackground || block.isBlankLine),
         isBlankLine: Boolean(block.isBlankLine),
         pageRotation: pageRot,
-        reflowed: (block.deltaY || 0) > 0.5
+        reflowed: (block.deltaY || 0) > 0.5,
+        whiteoutBoxes: (block.lines && block.lines.length > 1) ? block.lines.map(line => {
+          const rawBox = [line.pdfX, line.pdfY, line.pdfWidth, line.pdfHeight];
+          return getRotatedBbox(rawBox, pageNumber);
+        }) : undefined
       });
     }
   }
@@ -1200,7 +1672,7 @@ async function renderPage(pageNumber) {
 
     // Extract text content and group into WPS Office-Style Paragraph Blocks
     const textContent = await page.getTextContent();
-    extractParagraphBlocks(pageNumber, textContent, viewport);
+    extractParagraphBlocks(pageNumber, textContent, viewport, pristineClone);
     scanAndAppendCanvasBlankLines(pageNumber, pristineClone, viewport);
     updatePageVerticalReflow(pageNumber);
 
@@ -1217,7 +1689,7 @@ async function renderPage(pageNumber) {
  * WPS Office-Style Paragraph Block Grouping:
  * Groups lines into logical Paragraph Blocks with bounding boxes and reflow capability.
  */
-function extractParagraphBlocks(pageNumber, textContent, viewport) {
+function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanvas = null) {
   const rawItems = [];
 
   for (let idx = 0; idx < textContent.items.length; idx++) {
@@ -1225,7 +1697,9 @@ function extractParagraphBlocks(pageNumber, textContent, viewport) {
     if (!item.str) continue;
 
     // Method A: Retain whitespace items if they represent fill-in-the-blank gaps (> 15px)
-    const isBlankRunWithWidth = !item.str.trim() && (item.str.length >= 2 || (item.width && item.width * viewport.scale > 15));
+    // PDF.js generates synthetic space items with height === 0 or single space between columns; skip them
+    const isSyntheticGap = (item.height === 0) || (item.str === ' ');
+    const isBlankRunWithWidth = !item.str.trim() && !isSyntheticGap && (item.width && item.width * viewport.scale > 15);
     if (!item.str.trim() && !isBlankRunWithWidth) continue;
 
     const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
@@ -1235,9 +1709,11 @@ function extractParagraphBlocks(pageNumber, textContent, viewport) {
     const fontSizeViewport = fontSizePdf * viewport.scale;
 
     const x = tx[4];
-    const y = tx[5] - (fontSizeViewport * 0.82);
+    // Baseline is tx[5]; calculate top-left y from exact font ascent (0.85 * fontSize)
+    const baselineY = tx[5];
+    const y = baselineY - (fontSizeViewport * 0.85);
     const width = Math.max(item.width * viewport.scale, 4);
-    const height = Math.max(fontSizeViewport * 0.98, 10);
+    const height = Math.max(fontSizeViewport * 1.05, 10);
 
     const pdfX = x / viewport.scale;
     const pdfY = y / viewport.scale;
@@ -1252,16 +1728,16 @@ function extractParagraphBlocks(pageNumber, textContent, viewport) {
       viewportFontSize: fontSizeViewport,
       bold: (item.fontName || '').toLowerCase().includes('bold'),
       italic: (item.fontName || '').toLowerCase().includes('italic') || (item.fontName || '').toLowerCase().includes('oblique'),
-      x, y, width, height,
+      x, y, baselineY, width, height,
       pdfX, pdfY, pdfWidth, pdfHeight
     });
   }
 
   // 1. Group items on the same baseline into Rows
   rawItems.sort((a, b) => {
-    const tol = Math.min(a.viewportFontSize * 0.35, 3.0 * viewport.scale);
-    const diffY = a.y - b.y;
-    if (Math.abs(diffY) > tol) return diffY;
+    const diffBaseY = a.baselineY - b.baselineY;
+    const tol = Math.min(Math.min(a.viewportFontSize, b.viewportFontSize) * 0.35, 3.0 * viewport.scale);
+    if (Math.abs(diffBaseY) > tol) return diffBaseY;
     return a.x - b.x;
   });
 
@@ -1270,7 +1746,7 @@ function extractParagraphBlocks(pageNumber, textContent, viewport) {
     let matchedRow = null;
     const tol = Math.min(item.viewportFontSize * 0.35, 3.0 * viewport.scale);
     for (const row of rows) {
-      if (Math.abs(item.y - row.baseY) <= tol) {
+      if (Math.abs(item.baselineY - row.baseY) <= tol) {
         matchedRow = row;
         break;
       }
@@ -1279,14 +1755,14 @@ function extractParagraphBlocks(pageNumber, textContent, viewport) {
       matchedRow.items.push(item);
     } else {
       rows.push({
-        baseY: item.y,
+        baseY: item.baselineY,
         items: [item]
       });
     }
   }
   rows.sort((a, b) => a.baseY - b.baseY);
 
-  // 2. Partition rows into Column Segments (preserving table columns)
+  // 2. Partition rows into Column Segments (preserving table columns and multi-column headers)
   const lines = [];
   for (let rIdx = 0; rIdx < rows.length; rIdx++) {
     const row = rows[rIdx];
@@ -1297,17 +1773,31 @@ function extractParagraphBlocks(pageNumber, textContent, viewport) {
       const prevItem = row.items[i - 1];
       const currItem = row.items[i];
       const gap = currItem.x - (prevItem.x + prevItem.width);
-      const gapThreshold = Math.max(prevItem.viewportFontSize * 2.2, 35 * viewport.scale);
 
-      if (gap > gapThreshold) {
-        lines.push(createLineFromItems(currentLineItems, viewport));
+      // Fix 1: Horizontal Gap Check
+      // Standard inter-word space in fonts is 0.25 - 0.40 * fontSize (typically 3-8px).
+      // If gap > 35 * scale or > prevItem.fontSize * 2.5, split into separate column segments!
+      const maxWordGap = Math.min(Math.max(prevItem.viewportFontSize * 2.2, 28 * viewport.scale), 35 * viewport.scale);
+      const isColumnGap = gap > maxWordGap || gap > (35 * viewport.scale);
+
+      // Fix 1: Font Size Mismatch Check
+      // If two items on the same baseline differ by > 2.5px or > 25% in font size, they must NEVER be merged!
+      const fontSizeDiff = Math.abs(currItem.viewportFontSize - prevItem.viewportFontSize);
+      const minFontSize = Math.min(currItem.viewportFontSize, prevItem.viewportFontSize);
+      const isFontSizeMismatch = (fontSizeDiff > 2.5 * viewport.scale) || (minFontSize > 0 && (fontSizeDiff / minFontSize) > 0.25);
+
+      // Boldness / Style mismatch across any noticeable gap
+      const isStyleMismatch = (prevItem.bold !== currItem.bold && gap > 12 * viewport.scale);
+
+      if (isColumnGap || isFontSizeMismatch || isStyleMismatch) {
+        lines.push(createLineFromItems(currentLineItems, viewport, pristineCanvas));
         currentLineItems = [currItem];
       } else {
         currentLineItems.push(currItem);
       }
     }
     if (currentLineItems.length > 0) {
-      lines.push(createLineFromItems(currentLineItems, viewport));
+      lines.push(createLineFromItems(currentLineItems, viewport, pristineCanvas));
     }
   }
 
@@ -1392,12 +1882,53 @@ function extractParagraphBlocks(pageNumber, textContent, viewport) {
 
     const verticalGap = line.y - (currentBlock.y + currentBlock.height);
     // Paragraph lines have gap around 8-14px. Gaps > 15px indicate new paragraphs or headings.
-    const maxGap = Math.min(currentBlock.viewportFontSize * 1.05, 14.5 * viewport.scale);
+    const maxGap = Math.min(currentBlock.viewportFontSize * 1.15, 14.5 * viewport.scale);
+
+    // Fix 2: Font Size Match Check (Math.abs(line.fontSize - currentBlock.fontSize) <= 1.5 * scale)
+    const fontSizeDiff = Math.abs(line.viewportFontSize - currentBlock.viewportFontSize);
+    const fontMatches = fontSizeDiff <= (1.5 * viewport.scale);
+
+    // Fix 3: Strict Left Alignment Check (leftDiff <= 6 * scale)
     const leftDiff = Math.abs(line.x - currentBlock.x);
-    const maxLeftDiff = Math.max(30 * viewport.scale, 25);
+    const isLeftAligned = leftDiff <= (6.0 * viewport.scale);
+
+    // Fix 3: Contact lines, emails, links, and bullet points NEVER merge!
+    const isContactOrSpecial = isContactOrListLine(line.text) || isContactOrListLine(currentBlock.text);
+
+    // Fix 3: Only merge full-width prose lines (> 200 * scale). Short / right-aligned lines never merge!
+    const isRightSide = (currentBlock.x > 200 * viewport.scale) || (line.x > 200 * viewport.scale);
+    let isProseWidth = (currentBlock.originalWidth >= 70 * viewport.scale) && (line.width >= 70 * viewport.scale);
+    if (isRightSide) {
+      isProseWidth = (currentBlock.originalWidth >= 200 * viewport.scale) && (line.width >= 200 * viewport.scale);
+    }
+
+function areColorsMatching(c1, c2) {
+  if (c1 === c2) return true;
+  if (!c1 || !c2) return true;
+  const parseHex = (hex) => {
+    const clean = (hex || '').replace('#', '');
+    if (clean.length === 6) {
+      return [parseInt(clean.slice(0, 2), 16), parseInt(clean.slice(2, 4), 16), parseInt(clean.slice(4, 6), 16)];
+    }
+    return [0, 0, 0];
+  };
+  const [r1, g1, b1] = parseHex(c1);
+  const [r2, g2, b2] = parseHex(c2);
+  const isDark1 = (r1 < 70 && g1 < 70 && b1 < 70);
+  const isDark2 = (r2 < 70 && g2 < 70 && b2 < 70);
+  if (isDark1 && isDark2) return true;
+  const dist = Math.hypot(r1 - r2, g1 - g2, b1 - b2);
+  return dist < 35;
+}
+
+// Fix 3: Color Matching Check
+    const colorMatches = areColorsMatching(line.color, currentBlock.color);
+
+    // Disjoint column check: If line is completely to the right or left of currentBlock
+    const isHorizontallyDisjoint = (line.x >= currentBlock.x + currentBlock.width + 10 * viewport.scale) ||
+                                   (currentBlock.x >= line.x + line.width + 10 * viewport.scale);
 
     const isNumberedList = /^(\d+[\.\)]|\([a-zA-Z0-9]+\)|[•\-\*])\s+/.test(line.text.trim());
-    const isHeading = Math.abs(line.viewportFontSize - currentBlock.viewportFontSize) > 2.0;
     const isHeaderChange = (currentBlock.lines.length === 1 && currentBlock.bold !== line.bold);
     const isBlockUppercase = currentBlock.lines.length === 1 &&
                              currentBlock.text.trim().length > 6 &&
@@ -1408,10 +1939,14 @@ function extractParagraphBlocks(pageNumber, textContent, viewport) {
     // Do NOT merge blank lines into other blocks so each blank line remains distinct
     const shouldMerge = !line.isBlankLine &&
                         !currentBlock.isBlankLine &&
-                        (verticalGap >= -3 && verticalGap <= maxGap) &&
-                        (leftDiff <= maxLeftDiff || (line.x >= currentBlock.x - 5 && line.x <= currentBlock.x + currentBlock.width)) &&
+                        fontMatches &&
+                        isLeftAligned &&
+                        isProseWidth &&
+                        colorMatches &&
+                        !isContactOrSpecial &&
+                        !isHorizontallyDisjoint &&
+                        (verticalGap >= -2 * viewport.scale && verticalGap <= maxGap) &&
                         !isNumberedList &&
-                        !isHeading &&
                         !isHeaderChange &&
                         !isBlockUppercase &&
                         !isLineUppercase;
@@ -1648,30 +2183,54 @@ function scanAndAppendCanvasBlankLines(pageNumber, pristineCanvas, viewport) {
   }
 }
 
-function createLineFromItems(items, viewport) {
-  const minX = Math.min(...items.map(it => it.x));
-  const maxX = Math.max(...items.map(it => it.x + it.width));
-  const minY = Math.min(...items.map(it => it.y));
-  const maxY = Math.max(...items.map(it => it.y + it.height));
-  const text = items.map(it => it.str).join(' ');
-  const first = items[0];
+function createLineFromItems(items, viewport, pristineCanvas = null) {
+  const textItems = items.filter(it => it.str && it.str.trim().length > 0);
+  const effectiveItems = textItems.length > 0 ? textItems : items;
+  const minX = Math.min(...effectiveItems.map(it => it.x));
+  const maxX = Math.max(...effectiveItems.map(it => it.x + it.width));
+  const first = effectiveItems[0] || items[0];
+  const fontSize = first.fontSize;
+  const viewportFontSize = first.viewportFontSize;
+  const baselineY = first.baselineY != null ? first.baselineY : (first.y + first.viewportFontSize * 0.85);
+  // Fix 3: Accurate top-left y from exact block fontSize (ascent 0.85)
+  const y = baselineY - (viewportFontSize * 0.85);
+  const height = Math.max(viewportFontSize * 1.05, Math.max(...effectiveItems.map(it => it.height)));
+  const text = effectiveItems.map(it => it.str).join(' ');
+
+  const fontName = first.fontName || 'Helvetica';
+  const fontFamily = mapPdfFontToCssFamily(fontName);
+  const bold = isFontBold(fontName);
+  const italic = isFontItalic(fontName);
+
+  // Sample exact text ink color from canvas before whiteout
+  let color = '#000000';
+  if (pristineCanvas) {
+    const dpr = pristineCanvas.width / viewport.width;
+    const sampled = sampleTextColorFromCanvas(pristineCanvas, minX, y, maxX - minX, height, dpr);
+    if (sampled) {
+      color = sampled;
+    }
+  }
 
   return {
     items,
     text,
     x: minX,
-    y: minY,
+    y: y,
+    baselineY,
     width: maxX - minX,
-    height: maxY - minY,
+    height: height,
     pdfX: minX / viewport.scale,
-    pdfY: minY / viewport.scale,
+    pdfY: y / viewport.scale,
     pdfWidth: (maxX - minX) / viewport.scale,
-    pdfHeight: (maxY - minY) / viewport.scale,
-    fontSize: first.fontSize,
-    viewportFontSize: first.viewportFontSize,
-    fontName: first.fontName,
-    bold: first.bold,
-    italic: first.italic
+    pdfHeight: height / viewport.scale,
+    fontSize: fontSize,
+    viewportFontSize: viewportFontSize,
+    fontName: fontName,
+    fontFamily: fontFamily,
+    bold: bold,
+    italic: italic,
+    color: color
   };
 }
 
@@ -1705,10 +2264,19 @@ function createBlockFromLine(line, pageNumber, blockIndex) {
     originalPdfHeight: line.pdfHeight,
     fontSize: line.fontSize,
     viewportFontSize: line.viewportFontSize,
+    originalFontSize: line.fontSize,
+    customFontSize: null,
     fontName: line.fontName,
-    bold: line.bold,
-    italic: line.italic,
-    color: '#000000',
+    fontFamily: line.fontFamily || mapPdfFontToCssFamily(line.fontName),
+    originalFontFamily: line.fontFamily || mapPdfFontToCssFamily(line.fontName),
+    bold: Boolean(line.bold),
+    originalBold: Boolean(line.bold),
+    italic: Boolean(line.italic),
+    originalItalic: Boolean(line.italic),
+    color: line.color || '#000000',
+    originalColor: line.color || '#000000',
+    customColor: null,
+    customWidth: null,
     isEdited: false,
     deltaY: 0,
     currentHeight: line.height
@@ -2211,5 +2779,134 @@ defineExpose({
   font-weight: 500;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+/* WPS-Style Floating Mini-Toolbar on Active / Selected Block */
+.block-floating-toolbar {
+  position: absolute;
+  top: -38px;
+  left: 0;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  z-index: 60;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.btn-toolbar-tool {
+  background: transparent;
+  border: none;
+  color: #e2e8f0;
+  font-size: 11px;
+  font-weight: 600;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 4px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-toolbar-tool:hover {
+  background-color: #334155;
+  color: #ffffff;
+}
+
+.btn-toolbar-tool.is-active {
+  background-color: #3b82f6;
+  color: #ffffff;
+}
+
+.toolbar-font-size-input {
+  width: 42px;
+  height: 22px;
+  background: #0f172a;
+  border: 1px solid #475569;
+  border-radius: 3px;
+  color: #f8fafc;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  outline: none;
+  padding: 0 2px;
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 16px;
+  background-color: #475569;
+  margin: 0 2px;
+}
+
+.toolbar-color-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+}
+
+.toolbar-color-label:hover {
+  background-color: #334155;
+}
+
+.toolbar-color-input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.color-preview-pip {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.btn-toolbar-revert {
+  color: #f87171;
+  font-size: 13px;
+}
+
+.btn-toolbar-revert:hover {
+  background-color: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+/* Corner Resize Handle on Active / Selected Block */
+.block-resize-handle {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 10px;
+  height: 10px;
+  background-color: #2563eb;
+  border: 1.5px solid #ffffff;
+  border-radius: 2px;
+  cursor: nwse-resize;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  z-index: 45;
+  touch-action: none;
+}
+
+.block-resize-handle:hover {
+  background-color: #1d4ed8;
+  transform: scale(1.2);
 }
 </style>

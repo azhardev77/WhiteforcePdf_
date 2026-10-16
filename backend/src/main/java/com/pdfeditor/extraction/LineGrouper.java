@@ -160,7 +160,12 @@ public class LineGrouper {
                 // MUST NEVER be merged into the same Line object, regardless of how small the gap is.
                 boolean crossesDivider = (prev.getX() < X_DIVIDER && word.getX() >= (X_DIVIDER - 5.0));
 
-                if (gapExceeded || crossesDivider) {
+                double fontDiff = Math.abs(word.getFontSize() - prev.getFontSize());
+                double minFont = Math.min(word.getFontSize(), prev.getFontSize());
+                boolean fontMismatch = (fontDiff > 2.5) || (minFont > 0 && (fontDiff / minFont) > 0.25);
+                boolean gapColumn = gap > Math.min(Math.max(prev.getFontSize() * 2.2, 25.0), 35.0);
+
+                if (gapExceeded || crossesDivider || fontMismatch || gapColumn) {
                     segments.add(currentSegment);
                     currentSegment = new ArrayList<>();
                 }

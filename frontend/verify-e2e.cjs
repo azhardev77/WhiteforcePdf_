@@ -27,7 +27,7 @@ const fs = require('fs');
     await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
 
     console.log('2. Clicking "Open Tender RFQ PDF" button...');
-    const sampleBtn = page.locator('button.btn-sample-doc');
+    const sampleBtn = page.locator('button.btn-sample-tender');
     await sampleBtn.waitFor({ state: 'visible', timeout: 10000 });
     await sampleBtn.click();
 
@@ -372,6 +372,114 @@ const fs = require('fs');
     console.log(`Screenshot of edited blank lines saved to ${blankScreenshotPath}`);
 
     // =========================================================================
+    // REQUIREMENT 6: Drag & Drop / Move Paragraph Block
+    // =========================================================================
+    console.log('\n--- VERIFYING REQUIREMENT 6: Drag & Drop / Move Paragraph Block ---');
+
+    // 1. Target a paragraph block ("Tender Enquiry (RFQ)")
+    const moveTargetBlock = page.locator('#pdf-page-1 .wps-paragraph-block').filter({ hasText: /Tender Enquiry/ }).first();
+    await moveTargetBlock.waitFor({ state: 'visible', timeout: 5000 });
+    const moveBlockId = await moveTargetBlock.getAttribute('data-block-id');
+    console.log(`Targeting block for Drag & Drop: [${moveBlockId}]`);
+
+    // 2. Hover over the block to display the 4-way drag handle
+    await moveTargetBlock.hover();
+    await page.waitForTimeout(200);
+
+    const dragHandle = moveTargetBlock.locator('.block-drag-handle');
+    await dragHandle.waitFor({ state: 'visible', timeout: 3000 });
+    console.log('[PASS] Drag Handle (.block-drag-handle) with 4-way move arrow is visible on hover.');
+
+    const initialBbox = await moveTargetBlock.boundingBox();
+    console.log(`  Initial Block Position: x=${initialBbox.x.toFixed(1)}, y=${initialBbox.y.toFixed(1)}, width=${initialBbox.width.toFixed(1)}, height=${initialBbox.height.toFixed(1)}`);
+
+    const handleBox = await dragHandle.boundingBox();
+    const startHandleX = handleBox.x + (handleBox.width / 2);
+    const startHandleY = handleBox.y + (handleBox.height / 2);
+
+    const deltaX = 50;
+    const deltaY = 30;
+
+    console.log(`Dragging block by +${deltaX}px right and +${deltaY}px down...`);
+    await page.mouse.move(startHandleX, startHandleY);
+    await page.mouse.down();
+    await page.mouse.move(startHandleX + deltaX, startHandleY + deltaY, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForTimeout(600);
+
+    // 3. Assert coordinates updated
+    const movedBbox = await moveTargetBlock.boundingBox();
+    const actualDeltaX = movedBbox.x - initialBbox.x;
+    const actualDeltaY = movedBbox.y - initialBbox.y;
+    console.log(`  Moved Block Position: x=${movedBbox.x.toFixed(1)}, y=${movedBbox.y.toFixed(1)} (Actual Delta: +${actualDeltaX.toFixed(1)}px X, +${actualDeltaY.toFixed(1)}px Y)`);
+
+    if (Math.abs(actualDeltaX - deltaX) > 6) {
+      throw new Error(`REQUIREMENT 6 FAILED: Block did not move ~${deltaX}px horizontally! Actual delta: ${actualDeltaX.toFixed(1)}px`);
+    }
+    if (Math.abs(actualDeltaY - deltaY) > 6) {
+      throw new Error(`REQUIREMENT 6 FAILED: Block did not move ~${deltaY}px vertically! Actual delta: ${actualDeltaY.toFixed(1)}px`);
+    }
+    console.log('[PASS] Requirement 6a: Block coordinates updated accurately (+50px right, +30px down).');
+
+    // 4. Assert block has data-is-moved="true" and class is-moved
+    const isMovedAttr = await moveTargetBlock.getAttribute('data-is-moved');
+    const movedClass = await moveTargetBlock.getAttribute('class');
+    if (isMovedAttr !== 'true' || !movedClass.includes('is-moved')) {
+      throw new Error(`REQUIREMENT 6 FAILED: Block missing data-is-moved="true" or is-moved class! (attr=${isMovedAttr}, class=${movedClass})`);
+    }
+    console.log('[PASS] Requirement 6b: Block marked with data-is-moved="true" and .is-moved class.');
+
+    // 5. Assert whiteout mask box is active at the original coordinates
+    const maskSelector = `#pdf-page-1 .whiteout-mask-box[id="mask-${moveBlockId}"]`;
+    const maskEl = page.locator(maskSelector);
+    await maskEl.waitFor({ state: 'attached', timeout: 5000 });
+    const maskBox = await maskEl.boundingBox();
+    console.log(`  Original Position Whiteout Mask: x=${maskBox.x.toFixed(1)}, y=${maskBox.y.toFixed(1)}, width=${maskBox.width.toFixed(1)}, height=${maskBox.height.toFixed(1)}`);
+
+    // Verify mask is at original position (near initialBbox.x and initialBbox.y, NOT moved by +50, +30)
+    if (Math.abs(maskBox.x - initialBbox.x) > 6 || Math.abs(maskBox.y - initialBbox.y) > 6) {
+      throw new Error(`REQUIREMENT 6 FAILED: Whiteout mask is NOT at the original position! (Mask: ${maskBox.x.toFixed(1)}, ${maskBox.y.toFixed(1)}, Expected: ${initialBbox.x.toFixed(1)}, ${initialBbox.y.toFixed(1)})`);
+    }
+    console.log('[PASS] Requirement 6c: Whiteout mask box is active at the original position covering old PDF text.');
+
+    // 6. Assert export payload has updated coordinates and originalBoundingBox
+    const edits = await page.evaluate(() => {
+      if (typeof window.__buildRedactionPayload === 'function') {
+        return window.__buildRedactionPayload();
+      }
+      return [];
+    });
+    const movedEdit = edits.find(e => e.lineId === moveBlockId);
+    if (!movedEdit) {
+      throw new Error(`REQUIREMENT 6 FAILED: Export edits missing redaction entry for moved block ${moveBlockId}!`);
+    }
+    console.log('  Moved Block Export Payload Entry:', {
+      id: movedEdit.id,
+      isMoved: movedEdit.isMoved,
+      newBbox: movedEdit.bbox,
+      originalBbox: movedEdit.originalBbox
+    });
+
+    if (!movedEdit.isMoved) {
+      throw new Error('REQUIREMENT 6 FAILED: Export edit isMoved is false!');
+    }
+    if (!movedEdit.originalBbox || movedEdit.originalBbox.length !== 4) {
+      throw new Error('REQUIREMENT 6 FAILED: Export edit missing valid originalBbox / originalBoundingBox!');
+    }
+    const bboxShiftX = movedEdit.bbox[0] - movedEdit.originalBbox[0];
+    const bboxShiftY = movedEdit.bbox[1] - movedEdit.originalBbox[1];
+    console.log(`  Export PDF Coordinate Shift: dX=${bboxShiftX.toFixed(2)}, dY=${bboxShiftY.toFixed(2)}`);
+    if (bboxShiftX <= 10 || bboxShiftY <= 5) {
+      throw new Error(`REQUIREMENT 6 FAILED: Export bbox was not shifted! (dX=${bboxShiftX}, dY=${bboxShiftY})`);
+    }
+    console.log('[PASS] Requirement 6d: Export payload contains isMoved: true, originalBbox for whiteout, and updated bbox for dropped position.');
+
+    // Save screenshot of moved block and whiteout mask
+    const movedScreenshotPath = path.resolve(rootDir, 'block_drag_moved_verified.png');
+    await page.screenshot({ path: movedScreenshotPath, fullPage: false });
+    console.log(`Screenshot of moved block saved to ${movedScreenshotPath}`);
+
+    // =========================================================================
     // REQUIREMENT 4: Seamless PDF Export & Verification
     // =========================================================================
     console.log('\n--- VERIFYING REQUIREMENT 4: Seamless PDF Export ---');
@@ -392,8 +500,194 @@ const fs = require('fs');
     }
     console.log('[PASS] Requirement 4: Exported PDF generated and downloaded cleanly.');
 
+    // =========================================================================
+    // REQUIREMENT 7: Resume Header Cross-Column & Multi-Line Layout Verification
+    // (`resume.pdf`: 20pt Left Heading vs 9pt Right Contact & LinkedIn)
+    // =========================================================================
+    console.log('\n--- VERIFYING REQUIREMENT 7: Resume Header Layout & Strict Column Isolation ---');
+
+    console.log('Navigating back to home screen to load resume.pdf...');
+    await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
+
+    console.log('Clicking "Open Resume PDF" button...');
+    const resumeBtn = page.locator('button.btn-sample-resume');
+    await resumeBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await resumeBtn.click();
+
+    console.log('Waiting for Page 1 canvas and Resume paragraph blocks...');
+    await page.waitForSelector('#pdf-page-1 canvas.pdf-page-canvas', { state: 'visible', timeout: 15000 });
+    await page.waitForSelector('#pdf-page-1 .wps-paragraph-block', { state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(1000);
+
+    // Retrieve all paragraph blocks on Page 1 of Resume
+    const resumeBlocks = await page.evaluate(() => {
+      const page1 = document.getElementById('pdf-page-1');
+      if (!page1) return [];
+      const els = Array.from(page1.querySelectorAll('.wps-paragraph-block'));
+      return els.map(el => {
+        const rect = el.getBoundingClientRect();
+        const cs = window.getComputedStyle(el);
+        return {
+          id: el.getAttribute('data-block-id') || '',
+          text: (el.getAttribute('data-text') || el.innerText || '').trim(),
+          fontSize: parseFloat(el.getAttribute('data-font-size')) || parseFloat(cs.fontSize),
+          fontFamily: cs.fontFamily,
+          rect: {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            width: rect.width,
+            height: rect.height
+          }
+        };
+      });
+    });
+
+    console.log(`Found ${resumeBlocks.length} paragraph blocks on Resume Page 1:`);
+    for (const b of resumeBlocks) {
+      console.log(`  [${b.id}] "${b.text.slice(0, 40)}" (fontSize: ${b.fontSize}px, rect: x=${b.rect.left.toFixed(1)}, y=${b.rect.top.toFixed(1)}, w=${b.rect.width.toFixed(1)}, h=${b.rect.height.toFixed(1)})`);
+    }
+
+    // 1. Verify Left Heading ("Mohd Azhar Mansoori") and Right Contact ("Jabalpur +91-7747047876")
+    const nameBlockData = resumeBlocks.find(b => b.text.includes('Mohd Azhar Mansoori'));
+    const contactBlockData = resumeBlocks.find(b => b.text.includes('Jabalpur') || b.text.includes('+91-7747047876'));
+    const linkedInBlockData = resumeBlocks.find(b => b.text.includes('LinkedIn') || b.text.includes('GitHub'));
+
+    if (!nameBlockData) {
+      throw new Error('REQUIREMENT 7 FAILED: Heading block "Mohd Azhar Mansoori" not found!');
+    }
+    if (!contactBlockData) {
+      throw new Error('REQUIREMENT 7 FAILED: Right contact block "Jabalpur +91-7747047876" not found!');
+    }
+    if (!linkedInBlockData) {
+      throw new Error('REQUIREMENT 7 FAILED: Right contact line "LinkedIn GitHub..." not found!');
+    }
+
+    console.log('\nChecking Column Isolation between Left Heading and Right Contact:');
+    console.log(`  Name Block [${nameBlockData.id}]: "${nameBlockData.text}", fontSize=${nameBlockData.fontSize}px, width=${nameBlockData.rect.width.toFixed(1)}px`);
+    console.log(`  Contact Block [${contactBlockData.id}]: "${contactBlockData.text}", fontSize=${contactBlockData.fontSize}px, width=${contactBlockData.rect.width.toFixed(1)}px`);
+
+    // Verify they are 2 distinct paragraph blocks (NOT merged)
+    if (nameBlockData.id === contactBlockData.id) {
+      throw new Error('REQUIREMENT 7 FAILED: "Mohd Azhar Mansoori" and "Jabalpur" were merged into the same block ID!');
+    }
+    if (nameBlockData.text.includes('Jabalpur') || nameBlockData.text.includes('7747047876')) {
+      throw new Error('REQUIREMENT 7 FAILED: Name block contains contact details! Merged across columns.');
+    }
+    if (contactBlockData.text.includes('Mohd Azhar')) {
+      throw new Error('REQUIREMENT 7 FAILED: Contact block contains heading text!');
+    }
+
+    // Check font sizes: Name should be ~25px (20pt * 1.25), Contact should be ~11.25px (9pt * 1.25)
+    if (nameBlockData.fontSize < 20) {
+      throw new Error(`REQUIREMENT 7 FAILED: Name heading font size too small: ${nameBlockData.fontSize}px (expected ~25px)`);
+    }
+    if (contactBlockData.fontSize > 16) {
+      throw new Error(`REQUIREMENT 7 FAILED: Contact text font size inflated: ${contactBlockData.fontSize}px (expected ~11.25px)`);
+    }
+    console.log('[PASS] Requirement 7a: "Mohd Azhar Mansoori" (20pt) and "Jabalpur +91-7747047876" (9pt) are 2 independent blocks with correct font sizes.');
+
+    // 2. Edit "Mohd Azhar Mansoori" -> "Mohd Azhar Mnsoori"
+    console.log('\nEditing "Mohd Azhar Mansoori" to "Mohd Azhar Mnsoori"...');
+    const nameBlockLocator = page.locator(`#pdf-page-1 .wps-paragraph-block[data-block-id="${nameBlockData.id}"]`);
+    await nameBlockLocator.click();
+    await page.waitForTimeout(200);
+
+    const nameTextarea = page.locator('#pdf-page-1 textarea.wps-paragraph-textarea');
+    await nameTextarea.waitFor({ state: 'visible', timeout: 3000 });
+    await nameTextarea.fill('Mohd Azhar Mnsoori');
+    await page.waitForTimeout(200);
+
+    // Commit by clicking outside
+    await page.click('#pdf-page-1 .page-label');
+    await page.waitForTimeout(400);
+
+    // Verify contactBlock font size did NOT change to 20pt
+    const postEditContactStyle = await page.evaluate((cId) => {
+      const el = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${cId}"]`);
+      if (!el) return null;
+      const cs = window.getComputedStyle(el);
+      return {
+        fontSize: parseFloat(el.getAttribute('data-font-size')) || parseFloat(cs.fontSize),
+        text: (el.innerText || '').trim()
+      };
+    }, contactBlockData.id);
+
+    console.log('Post-edit Contact Block state:', postEditContactStyle);
+    if (postEditContactStyle.fontSize > 16) {
+      throw new Error(`REQUIREMENT 7 FAILED: Contact block font size changed to ${postEditContactStyle.fontSize}px after editing heading!`);
+    }
+    console.log('[PASS] Requirement 7b: Editing heading did NOT change contact font size.');
+
+    // Verify tight whiteout mask: Mask must NOT span across page to obscure "LinkedIn GitHub"
+    const nameMask = page.locator(`#pdf-page-1 .whiteout-mask-box[id="mask-${nameBlockData.id}"]`);
+    await nameMask.waitFor({ state: 'attached', timeout: 3000 });
+    const nameMaskBox = await nameMask.boundingBox();
+    console.log(`Name Whiteout Mask Bounding Box: x=${nameMaskBox.x.toFixed(1)}, y=${nameMaskBox.y.toFixed(1)}, w=${nameMaskBox.width.toFixed(1)}, h=${nameMaskBox.height.toFixed(1)}`);
+
+    // In resume.pdf, total page width is ~765px (612pt * 1.25). A tight mask over "Mohd Azhar Mansoori" should be <= 350px
+    if (nameMaskBox.width > 400) {
+      throw new Error(`REQUIREMENT 7 FAILED: Whiteout mask is oversized (${nameMaskBox.width.toFixed(1)}px)! It covers the whole width of the page.`);
+    }
+
+    // Verify "LinkedIn GitHub" block is NOT covered by the whiteout mask
+    const linkedInLocator = page.locator(`#pdf-page-1 .wps-paragraph-block[data-block-id="${linkedInBlockData.id}"]`);
+    const linkedInBox = await linkedInLocator.boundingBox();
+    console.log(`LinkedIn Block Bounding Box: x=${linkedInBox.x.toFixed(1)}, y=${linkedInBox.y.toFixed(1)}, w=${linkedInBox.width.toFixed(1)}, h=${linkedInBox.height.toFixed(1)}`);
+
+    // Mask right boundary should be well to the left of LinkedIn start
+    const maskRight = nameMaskBox.x + nameMaskBox.width;
+    console.log(`Mask Right Edge: ${maskRight.toFixed(1)}px vs LinkedIn Left Edge: ${linkedInBox.x.toFixed(1)}px`);
+    if (maskRight > linkedInBox.x + 5) {
+      throw new Error(`REQUIREMENT 7 FAILED: Name whiteout mask overlaps horizontally with LinkedIn block! (maskRight=${maskRight}, linkedInX=${linkedInBox.x})`);
+    }
+    console.log('[PASS] Requirement 7c: Whiteout mask is tightly fitted to heading (~250px) and does NOT obscure adjacent/lower lines ("LinkedIn GitHub").');
+
+    // 3. Edit right-side contact / LinkedIn block and verify zero upward overlap
+    console.log('\nEditing right-side LinkedIn block to verify vertical positioning without overlap...');
+    const contactBoxBefore = await page.locator(`#pdf-page-1 .wps-paragraph-block[data-block-id="${contactBlockData.id}"]`).boundingBox();
+    const linkedInBoxBefore = await page.locator(`#pdf-page-1 .wps-paragraph-block[data-block-id="${linkedInBlockData.id}"]`).boundingBox();
+
+    console.log(`Contact above (Jabalpur): y=${contactBoxBefore.y.toFixed(1)}, bottom=${(contactBoxBefore.y + contactBoxBefore.height).toFixed(1)}`);
+    console.log(`LinkedIn below before edit: y=${linkedInBoxBefore.y.toFixed(1)}`);
+
+    // Click LinkedIn block to edit
+    await linkedInLocator.click();
+    await page.waitForTimeout(200);
+
+    const linkedInTextarea = page.locator('#pdf-page-1 textarea.wps-paragraph-textarea');
+    await linkedInTextarea.waitFor({ state: 'visible', timeout: 3000 });
+    const activeLinkedInBox = await linkedInLocator.boundingBox();
+    console.log(`LinkedIn while editing: y=${activeLinkedInBox.y.toFixed(1)}`);
+
+    // Verify it did NOT jump upward over Jabalpur
+    if (activeLinkedInBox.y < contactBoxBefore.y + contactBoxBefore.height - 4) {
+      throw new Error(`REQUIREMENT 7 FAILED: Editing LinkedIn block shifted it upwards over Jabalpur! (LinkedIn y=${activeLinkedInBox.y}, Jabalpur bottom=${contactBoxBefore.y + contactBoxBefore.height})`);
+    }
+
+    // Type edited text
+    await linkedInTextarea.fill('LinkedIn  |  GitHub  |  Portfolio  |  LeetCode');
+    await page.waitForTimeout(200);
+
+    // Commit by clicking outside
+    await page.click('#pdf-page-1 .page-label');
+    await page.waitForTimeout(400);
+
+    const linkedInBoxAfter = await linkedInLocator.boundingBox();
+    console.log(`LinkedIn after commit: y=${linkedInBoxAfter.y.toFixed(1)}`);
+    if (linkedInBoxAfter.y < contactBoxBefore.y + contactBoxBefore.height - 4) {
+      throw new Error(`REQUIREMENT 7 FAILED: Committed LinkedIn block overlaps Jabalpur!`);
+    }
+    console.log('[PASS] Requirement 7d: Right-side contact blocks maintain accurate vertical top-Y coordinates with zero upward overlap.');
+
+    // Save screenshot of verified resume layout
+    const resumeScreenshotPath = path.resolve(rootDir, 'resume_header_layout_verified.png');
+    await page.screenshot({ path: resumeScreenshotPath, fullPage: false });
+    console.log(`Screenshot of verified resume layout saved to ${resumeScreenshotPath}`);
+
     console.log('\n=======================================================================');
-    console.log('=== ALL 5 WPS OFFICE-STYLE PARAGRAPH BLOCK TESTS PASSED 100% ===');
+    console.log('=== ALL TESTS INCLUDING RESUME HEADER LAYOUT PASSED 100% ===');
     console.log('=======================================================================\n');
   } catch (err) {
     console.error('\n[TEST FAILED]:', err);
