@@ -1,0 +1,17 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: pdf-editor-backend
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+app:
+  security:
+    api-key: ${API_KEY:my_secure_secret_key_12345}
+    header-name: X-API-KEY

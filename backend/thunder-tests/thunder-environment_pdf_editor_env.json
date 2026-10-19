@@ -1,0 +1,17 @@
+{
+  "clientName": "Thunder Client",
+  "environmentName": "Local Development",
+  "environmentId": "pdf-editor-env",
+  "dateExported": "2026-10-19",
+  "version": "1.1",
+  "variables": [
+    {
+      "name": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "name": "apiKey",
+      "value": "my_secure_secret_key_12345"
+    }
+  ]
+}

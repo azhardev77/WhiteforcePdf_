@@ -77,11 +77,36 @@
           <span>Close</span>
         </button>
 
+        <!-- Dedicated Save Button (Ctrl+S) -->
+        <button
+          v-if="documentStore.hasDocument"
+          type="button"
+          class="btn-save-doc"
+          :class="{ 'is-saved': isRecentlySaved, 'is-saving': documentStore.isSaving }"
+          :disabled="documentStore.isSaving"
+          :title="`Save and overwrite directly into ${documentStore.fileName || 'this PDF file'} (Ctrl+S)`"
+          @click="handleSave"
+        >
+          <span v-if="documentStore.isSaving" class="spinner-sm" />
+          <svg v-else-if="isRecentlySaved" class="icon-sm text-green" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+          <svg v-else class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+            <polyline points="17 21 17 13 7 13 7 21" />
+            <polyline points="7 3 7 8 15 8" />
+          </svg>
+          <span v-if="documentStore.isSaving">Saving...</span>
+          <span v-else-if="isRecentlySaved">Saved</span>
+          <span v-else>Save</span>
+          <kbd v-if="!documentStore.isSaving && !isRecentlySaved" class="btn-kbd">Ctrl+S</kbd>
+        </button>
+
         <button
           v-if="documentStore.hasDocument"
           type="button"
           class="btn-primary"
-          :disabled="documentStore.isExporting"
+          :disabled="documentStore.isExporting || documentStore.isSaving"
           @click="handleExport"
         >
           <span v-if="documentStore.isExporting" class="spinner" />
@@ -114,6 +139,7 @@
     <EditorToolbar
       v-if="documentStore.hasDocument"
       :is-exporting="documentStore.isExporting"
+      @save="handleSave"
       @export="handleExport"
       @revert-all="handleRevertAll"
     />
@@ -145,7 +171,7 @@
           </p>
 
           <div class="dropzone-actions">
-            <label class="btn-browse-file">
+            <label class="btn-browse-file" @click.prevent="triggerOpenNewFile">
               <input
                 type="file"
                 accept="application/pdf"
@@ -237,11 +263,22 @@
         </p>
       </div>
     </div>
+
+    <!-- Export Success Toast -->
+    <transition name="toast-fade">
+      <div v-if="exportToastMessage" class="export-toast" data-testid="export-toast">
+        <svg class="toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+          <polyline points="22 4 12 14.01 9 11.01" />
+        </svg>
+        <span>{{ exportToastMessage }}</span>
+      </div>
+    </transition>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { useDocumentStore } from '@/stores/document';
 import EditorToolbar from '@/components/EditorToolbar.vue';
 import PdfCanvasEditor from '@/components/PdfCanvasEditor.vue';
@@ -253,8 +290,32 @@ const isDragging = ref(false);
 const isHydrating = ref(true);
 const headerFileInputRef = ref(null);
 const canvasEditorRef = ref(null);
+const exportToastMessage = ref('');
+let toastTimer = null;
+const isRecentlySaved = ref(false);
+let saveStateTimer = null;
+
+function showExportToast(msg) {
+  exportToastMessage.value = msg;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    exportToastMessage.value = '';
+    toastTimer = null;
+  }, 4000);
+}
+
+function handleGlobalKeydown(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    if (documentStore.hasDocument) {
+      handleSave();
+    }
+  }
+}
 
 onMounted(async () => {
+  window.addEventListener('keydown', handleGlobalKeydown);
+
   try {
     const session = await sessionStorageService.loadSession();
     if (session && session.pdfBytes && session.pdfBytes.byteLength > 0) {
@@ -267,7 +328,36 @@ onMounted(async () => {
   }
 });
 
-function triggerOpenNewFile() {
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleGlobalKeydown);
+  if (saveStateTimer) clearTimeout(saveStateTimer);
+  if (toastTimer) clearTimeout(toastTimer);
+});
+
+async function triggerOpenNewFile() {
+  if (typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function') {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        types: [{
+          description: 'PDF Document',
+          accept: { 'application/pdf': ['.pdf'] }
+        }],
+        multiple: false
+      });
+      if (handle) {
+        const file = await handle.getFile();
+        documentStore.fileHandle = handle;
+        await documentStore.uploadAndExtract(file);
+        return;
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        return;
+      }
+      console.warn('[FileSystemAccess] showOpenFilePicker fallback to file input:', err);
+    }
+  }
+
   if (headerFileInputRef.value) {
     headerFileInputRef.value.value = '';
     headerFileInputRef.value.click();
@@ -343,15 +433,65 @@ async function loadResumeDocument() {
   }
 }
 
+async function handleSave() {
+  if (documentStore.isSaving || !documentStore.hasDocument) return;
+
+  try {
+    if (canvasEditorRef.value?.commitActiveBlock) {
+      canvasEditorRef.value.commitActiveBlock();
+    }
+
+    let edits = [];
+    if (canvasEditorRef.value?.buildRedactionPayload) {
+      edits = canvasEditorRef.value.buildRedactionPayload();
+      documentStore.setEdits(edits);
+    }
+    const userRotations = canvasEditorRef.value?.getUserRotations ? canvasEditorRef.value.getUserRotations() : {};
+
+    const result = await documentStore.saveDocument({ edits, userRotations });
+    if (result?.cancelled) {
+      return;
+    }
+
+    // Commit baseline in canvas editor so edits counter drops to 0 and canvas cleanly re-renders
+    if (canvasEditorRef.value?.commitSavedBaseline && result?.pdfBytes) {
+      await canvasEditorRef.value.commitSavedBaseline(result.pdfBytes);
+    }
+
+    isRecentlySaved.value = true;
+    if (saveStateTimer) clearTimeout(saveStateTimer);
+    saveStateTimer = setTimeout(() => {
+      isRecentlySaved.value = false;
+      saveStateTimer = null;
+    }, 2500);
+
+    const targetName = result.fileName || documentStore.fileName || 'PDF';
+    const feedbackMsg = result.overwrittenDisk
+      ? `Saved directly to ${targetName} ✓`
+      : `Saved in workspace: ${targetName} ✓`;
+    showExportToast(feedbackMsg);
+  } catch (err) {
+    console.error('Save failed:', err);
+    documentStore.errorMessage = err.message || 'Failed to save document.';
+  } finally {
+    documentStore.isCommittedSave = false;
+  }
+}
+
 async function handleExport() {
   try {
+    if (canvasEditorRef.value?.commitActiveBlock) {
+      canvasEditorRef.value.commitActiveBlock();
+    }
     if (canvasEditorRef.value?.buildRedactionPayload) {
       const edits = canvasEditorRef.value.buildRedactionPayload();
       documentStore.setEdits(edits);
     }
-    await documentStore.downloadPdf();
-  } catch {
-    // Error handled in store
+    const userRotations = canvasEditorRef.value?.getUserRotations ? canvasEditorRef.value.getUserRotations() : {};
+    await documentStore.downloadPdf({ userRotations });
+    showExportToast('PDF modified and downloaded successfully!');
+  } catch (err) {
+    console.error('Export failed:', err);
   }
 }
 
@@ -813,5 +953,88 @@ function confirmReset() {
   background-color: rgba(239, 68, 68, 0.15);
   border-color: #ef4444;
   color: #f87171;
+}
+
+.export-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(16, 185, 129, 0.95);
+  backdrop-filter: blur(8px);
+  color: #ffffff;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 0 15px rgba(16, 185, 129, 0.4);
+  z-index: 9999;
+}
+
+.toast-icon {
+  width: 20px;
+  height: 20px;
+  stroke: #ffffff;
+}
+
+.toast-fade-enter-active,
+.toast-fade-leave-active {
+  transition: all 0.3s ease;
+}
+
+.toast-fade-enter-from,
+.toast-fade-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.btn-save-doc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  height: 32px;
+  border-radius: var(--radius-sm, 4px);
+  background: #047857;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid #059669;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-save-doc:hover:not(:disabled) {
+  background: #059669;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.4);
+}
+
+.btn-save-doc.is-saved {
+  background: #065f46;
+  border-color: #10b981;
+}
+
+.btn-save-doc:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.btn-kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-family: inherit;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  margin-left: 2px;
+}
+
+.text-green {
+  color: #34d399;
 }
 </style>

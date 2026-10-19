@@ -100,6 +100,22 @@
     <div class="toolbar-group toolbar-group-right">
       <button
         type="button"
+        class="btn-toolbar-save"
+        :disabled="documentStore.isSaving"
+        title="Save in-place into same PDF file (Ctrl+S)"
+        @click="$emit('save')"
+      >
+        <span v-if="documentStore.isSaving" class="spinner-sm" />
+        <svg v-else class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+          <polyline points="17 21 17 13 7 13 7 21" />
+          <polyline points="7 3 7 8 15 8" />
+        </svg>
+        <span>Save</span>
+      </button>
+
+      <button
+        type="button"
         class="btn-toolbar-export"
         :disabled="isExporting"
         @click="$emit('export')"
@@ -127,7 +143,7 @@ const props = defineProps({
   }
 });
 
-const emit = defineEmits(['export', 'revert-all']);
+const emit = defineEmits(['save', 'export', 'revert-all']);
 
 const documentStore = useDocumentStore();
 
@@ -308,6 +324,33 @@ function clearAllEdits() {
 
 .btn-clear-edits:hover {
   background: rgba(239, 68, 68, 0.15);
+}
+
+.btn-toolbar-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 30px;
+  border-radius: var(--radius-sm, 4px);
+  background: #047857;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid #059669;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(5, 150, 105, 0.25);
+  transition: all 0.15s ease;
+}
+
+.btn-toolbar-save:hover:not(:disabled) {
+  background: #059669;
+  box-shadow: 0 4px 8px rgba(5, 150, 105, 0.4);
+}
+
+.btn-toolbar-save:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .btn-toolbar-export {

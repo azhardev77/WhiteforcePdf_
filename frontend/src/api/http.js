@@ -8,6 +8,15 @@ const api = axios.create({
   }
 });
 
+// Request interceptor to automatically attach X-API-KEY header
+api.interceptors.request.use((config) => {
+  const apiKey = import.meta.env.VITE_API_KEY || 'my_secure_secret_key_12345';
+  if (apiKey) {
+    config.headers['X-API-KEY'] = apiKey;
+  }
+  return config;
+});
+
 // Response interceptor for unified, user-friendly error formatting
 api.interceptors.response.use(
   (response) => response,

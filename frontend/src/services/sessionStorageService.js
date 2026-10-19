@@ -87,6 +87,7 @@ export async function saveSession(sessionData) {
         edits: safeClone(sessionData.edits, []),
         editedBlocksState: safeClone(sessionData.editedBlocksState, {}),
         textBlocks: safeClone(sessionData.textBlocks, []),
+        pageBlocksMap: safeClone(sessionData.pageBlocksMap, null),
         autoRedactedBlockIds: safeClone(sessionData.autoRedactedBlockIds, []),
         viewSettings: safeClone(sessionData.viewSettings, { zoom: 1.25, userRotations: {} }),
         updatedAt: Date.now()

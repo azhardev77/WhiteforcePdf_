@@ -1,4 +1,7 @@
 import { defineStore } from 'pinia';
+import { extractPdfClient } from '@/services/clientPdfExtractor';
+import { exportModifiedPdf, triggerBrowserDownload } from '@/services/pdfLibExportService';
+import sessionStorageService from '@/services/sessionStorageService';
 import { extractPdf, extractSample, fetchRawSamplePdf } from '@/api/documents';
 import { exportPdf, exportRedactedPdf, exportHtml } from '@/api/export';
 
@@ -7,11 +10,15 @@ export const useDocumentStore = defineStore('document', {
     documentModel: null,
     originalPdfData: null, // ArrayBuffer or Uint8Array
     originalFile: null,    // File or Blob
+    fileHandle: null,      // FileSystemFileHandle when opened via File System Access API
     edits: [],             // Array of TextRedactionEdit
     activeBlockId: null,
     zoom: 1.25,
     isExtracting: false,
     isExporting: false,
+    isSaving: false,
+    isCommittedSave: false,
+    lastSavedTime: null,
     errorMessage: null,
     fileName: '',
     restoredSession: null,
@@ -40,7 +47,7 @@ export const useDocumentStore = defineStore('document', {
 
   actions: {
     /**
-     * Uploads a user PDF, stores raw binary in state, and extracts semantic layout.
+     * Uploads a user PDF, stores raw binary in state, and extracts layout client-side.
      *
      * @param {File} file - PDF file to upload
      * @returns {Promise<Object>} Extracted DocumentModel
@@ -52,18 +59,28 @@ export const useDocumentStore = defineStore('document', {
       this.fileName = file.name;
       this.edits = [];
       this.activeBlockId = null;
+      this.restoredSession = null;
+      this.isRestoredSession = false;
 
       try {
         const arrayBuffer = await file.arrayBuffer();
         this.originalPdfData = arrayBuffer;
         this.originalFile = file;
 
-        const model = await extractPdf(file);
-        if (model && !model.name) {
-          model.name = file.name;
+        // 100% Client-Side Extraction via pdfjs-dist
+        try {
+          const model = await extractPdfClient(arrayBuffer, file.name);
+          this.documentModel = model;
+          return model;
+        } catch (clientErr) {
+          console.warn('[documentStore] Client extraction failed, trying backend fallback:', clientErr);
+          const model = await extractPdf(file);
+          if (model && !model.name) {
+            model.name = file.name;
+          }
+          this.documentModel = model;
+          return model;
         }
-        this.documentModel = model;
-        return model;
       } catch (err) {
         this.errorMessage = err.message || 'Failed to extract PDF document';
         throw err;
@@ -73,7 +90,7 @@ export const useDocumentStore = defineStore('document', {
     },
 
     /**
-     * Extracts a sample PDF hosted on the backend and downloads raw binary for canvas.
+     * Loads a sample PDF from frontend static assets (or backend fallback) and extracts layout.
      *
      * @param {string} sampleFileName - Filename of sample PDF
      * @returns {Promise<Object>} Extracted DocumentModel
@@ -84,17 +101,49 @@ export const useDocumentStore = defineStore('document', {
       this.fileName = sampleFileName;
       this.edits = [];
       this.activeBlockId = null;
+      this.restoredSession = null;
+      this.isRestoredSession = false;
 
       try {
-        const [model, rawBuffer] = await Promise.all([
-          extractSample(sampleFileName),
-          fetchRawSamplePdf(sampleFileName)
-        ]);
+        let rawBuffer = null;
+
+        // 1. Primary: Load directly from frontend public assets (/samples/...)
+        try {
+          const resp = await fetch(`/samples/${sampleFileName}`);
+          if (resp.ok) {
+            rawBuffer = await resp.arrayBuffer();
+          }
+        } catch (staticErr) {
+          console.warn(`[documentStore] Static fetch /samples/${sampleFileName} failed:`, staticErr);
+        }
+
+        // 2. Secondary: Fallback to backend API if available
+        if (!rawBuffer) {
+          try {
+            rawBuffer = await fetchRawSamplePdf(sampleFileName);
+          } catch (backendRawErr) {
+            console.warn('[documentStore] Backend fetchRawSamplePdf failed:', backendRawErr);
+          }
+        }
+
+        if (!rawBuffer || rawBuffer.byteLength === 0) {
+          throw new Error(`Failed to load sample PDF: ${sampleFileName}`);
+        }
 
         this.originalPdfData = rawBuffer;
-        this.originalFile = new Blob([rawBuffer], { type: 'application/pdf' });
-        this.documentModel = model;
-        return model;
+        this.originalFile = new Blob([rawBuffer.slice(0)], { type: 'application/pdf' });
+
+        // Pure Client-side DocumentModel generation
+        try {
+          const model = await extractPdfClient(rawBuffer, sampleFileName);
+          this.documentModel = model;
+          return model;
+        } catch (clientErr) {
+          console.warn('[documentStore] Client sample model extraction failed, trying backend:', clientErr);
+          const model = await extractSample(sampleFileName);
+          this.documentModel = model;
+          return model;
+        }
       } catch (err) {
         this.errorMessage = err.message || `Failed to extract sample PDF: ${sampleFileName}`;
         throw err;
@@ -190,12 +239,13 @@ export const useDocumentStore = defineStore('document', {
     },
 
     /**
-     * Exports the current document with in-place redactions applied directly on original PDF.
+     * Exports the current document with in-place redactions applied directly on original PDF using pdf-lib.
      *
+     * @param {Object} [options] - Optional export settings (e.g. { userRotations })
      * @returns {Promise<Blob>} Exported PDF binary blob
      */
-    async downloadPdf() {
-      if (!this.originalPdfData && !this.documentModel) {
+    async downloadPdf(options = {}) {
+      if (!this.originalPdfData && !this.originalFile) {
         const err = new Error('No active document available for export.');
         this.errorMessage = err.message;
         throw err;
@@ -205,14 +255,24 @@ export const useDocumentStore = defineStore('document', {
       this.errorMessage = null;
 
       try {
-        if (this.originalFile || this.originalPdfData) {
-          // Always slice buffer to prevent detached ArrayBuffer issues
-          const fileBlob = this.originalFile || new Blob([this.originalPdfData.slice(0)], { type: 'application/pdf' });
-          const blob = await exportRedactedPdf(fileBlob, this.edits, this.fileName || 'edited_document.pdf');
+        let buffer = this.originalPdfData;
+        if (!buffer && this.originalFile) {
+          buffer = await this.originalFile.arrayBuffer();
+        }
+
+        const exportName = (this.fileName || 'document.pdf').replace(/\.pdf$/i, '') + '_edited.pdf';
+        const userRotations = options.userRotations || this.restoredSession?.viewSettings?.userRotations || {};
+
+        // 1. Primary: 100% In-Browser PDF modification using pdf-lib
+        try {
+          const modifiedBytes = await exportModifiedPdf(buffer, this.edits, { userRotations });
+          const blob = new Blob([modifiedBytes], { type: 'application/pdf' });
+          triggerBrowserDownload(blob, exportName);
           return blob;
-        } else {
-          // Fallback to model-based export if raw PDF is unavailable
-          const blob = await exportPdf(this.documentModel, this.fileName || this.documentModel.name);
+        } catch (clientErr) {
+          console.warn('[documentStore] Client pdf-lib export failed, attempting backend fallback:', clientErr);
+          const fileBlob = this.originalFile || new Blob([buffer.slice(0)], { type: 'application/pdf' });
+          const blob = await exportRedactedPdf(fileBlob, this.edits, exportName);
           return blob;
         }
       } catch (err) {
@@ -263,18 +323,148 @@ export const useDocumentStore = defineStore('document', {
     },
 
     /**
+     * Saves edits directly into the same PDF file:
+     * 1. Bakes active redactions, inline edits, and rotations into pdfBytes via pdf-lib.
+     * 2. Overwrites local disk file via FileSystemFileHandle (or showSaveFilePicker / download).
+     * 3. Updates active workspace state and IndexedDB with the new baseline pdfBytes (0 pending edits).
+     *
+     * @param {Object} [options]
+     * @param {Array} [options.edits] - Optional explicit edits payload
+     * @param {Object} [options.userRotations] - Optional page rotation map
+     * @returns {Promise<Object>} { success: true, fileName: string, overwrittenDisk: boolean }
+     */
+    async saveDocument(options = {}) {
+      if (!this.originalPdfData && !this.originalFile) {
+        throw new Error('No active document to save.');
+      }
+
+      this.isSaving = true;
+      this.errorMessage = null;
+
+      try {
+        let buffer = this.originalPdfData;
+        if (!buffer && this.originalFile) {
+          buffer = await this.originalFile.arrayBuffer();
+        }
+
+        const editsToApply = Array.isArray(options.edits) ? options.edits : this.edits;
+        const userRotations = options.userRotations || this.restoredSession?.viewSettings?.userRotations || {};
+
+        // 1. Bake modifications into PDF binary via pdf-lib
+        const modifiedBytes = await exportModifiedPdf(buffer, editsToApply, { userRotations });
+
+        // 2. Overwrite file on disk using File System Access API if available
+        let overwrittenDisk = false;
+        let activeHandle = this.fileHandle;
+
+        if (activeHandle && typeof activeHandle.createWritable === 'function') {
+          try {
+            const writable = await activeHandle.createWritable();
+            await writable.write(modifiedBytes);
+            await writable.close();
+            overwrittenDisk = true;
+          } catch (handleErr) {
+            console.warn('[documentStore] Existing fileHandle.createWritable failed:', handleErr);
+            activeHandle = null;
+          }
+        }
+
+        // If no active fileHandle yet, try showSaveFilePicker
+        if (!overwrittenDisk && typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function') {
+          try {
+            const handle = await window.showSaveFilePicker({
+              suggestedName: this.fileName || 'document.pdf',
+              types: [{
+                description: 'PDF Document',
+                accept: { 'application/pdf': ['.pdf'] }
+              }]
+            });
+            if (handle) {
+              const writable = await handle.createWritable();
+              await writable.write(modifiedBytes);
+              await writable.close();
+              this.fileHandle = handle;
+              if (handle.name) {
+                this.fileName = handle.name;
+              }
+              overwrittenDisk = true;
+            }
+          } catch (pickerErr) {
+            console.warn('[documentStore] showSaveFilePicker failed or cancelled, using download fallback:', pickerErr);
+            triggerBrowserDownload(modifiedBytes, this.fileName || 'document.pdf');
+            overwrittenDisk = false;
+          }
+        } else if (!overwrittenDisk) {
+          // Fallback download using exact original filename
+          triggerBrowserDownload(modifiedBytes, this.fileName || 'document.pdf');
+          overwrittenDisk = true;
+        }
+
+        // 3. Update in-memory workspace baseline
+        const newBuffer = modifiedBytes.buffer.slice(
+          modifiedBytes.byteOffset,
+          modifiedBytes.byteOffset + modifiedBytes.byteLength
+        );
+        this.isCommittedSave = true;
+        this.originalPdfData = newBuffer;
+        this.originalFile = new Blob([newBuffer], { type: 'application/pdf' });
+        this.edits = [];
+        this.restoredSession = null;
+        this.isRestoredSession = false;
+        this.lastSavedTime = Date.now();
+
+        // 4. Update IndexedDB session with the new baseline PDF bytes
+        try {
+          const sessionData = {
+            pdfBytes: newBuffer,
+            fileName: this.fileName || 'document.pdf',
+            documentModel: this.documentModel,
+            edits: [],
+            editedBlocksState: {},
+            textBlocks: [],
+            autoRedactedBlockIds: [],
+            viewSettings: {
+              zoom: this.zoom || 1.25,
+              userRotations: {}
+            },
+            updatedAt: Date.now()
+          };
+          await sessionStorageService.saveSession(sessionData);
+        } catch (dbErr) {
+          console.warn('[documentStore] Failed to update IndexedDB session on save:', dbErr);
+        }
+
+        return {
+          success: true,
+          fileName: this.fileName,
+          overwrittenDisk,
+          pdfBytes: newBuffer
+        };
+      } catch (err) {
+        this.errorMessage = err.message || 'Failed to save PDF document.';
+        throw err;
+      } finally {
+        this.isSaving = false;
+      }
+    },
+
+    /**
      * Resets document state back to empty.
      */
     resetDocument() {
       this.documentModel = null;
       this.originalPdfData = null;
       this.originalFile = null;
+      this.fileHandle = null;
       this.edits = [];
       this.activeBlockId = null;
       this.fileName = '';
       this.errorMessage = null;
       this.isExtracting = false;
       this.isExporting = false;
+      this.isSaving = false;
+      this.isCommittedSave = false;
+      this.lastSavedTime = null;
       this.restoredSession = null;
       this.isRestoredSession = false;
     }

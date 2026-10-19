@@ -19,6 +19,7 @@
     "@tiptap/starter-kit": "^2.6.0",
     "@tiptap/vue-3": "^2.6.0",
     "axios": "^1.7.0",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
     "pinia": "^2.1.0",
     "vue": "^3.4.0",

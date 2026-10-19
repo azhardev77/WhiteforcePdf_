@@ -372,6 +372,7 @@ function saveCurrentSession() {
       documentModel: toRaw(documentStore.documentModel),
       edits: currentEdits,
       editedBlocksState: JSON.parse(JSON.stringify(editedBlocksState)),
+      pageBlocksMap: JSON.parse(JSON.stringify(pageBlocksMap.value)),
       autoRedactedBlockIds: Array.from(autoRedactedBlockIds),
       viewSettings: {
         zoom: props.zoom || documentStore.zoom || 1.25,
@@ -1742,6 +1743,9 @@ async function renderAllPages(isRestored = false) {
     // Initial layout extraction and PII redaction across all pages of the document
     for (let p = 1; p <= numPages.value; p++) {
       try {
+        if (isRestored && pageBlocksMap.value[p] && pageBlocksMap.value[p].length > 0) {
+          continue;
+        }
         const page = await currentPdfDoc.getPage(p);
         const rot = userRotations.value[p] || 0;
         const vp = page.getViewport({ scale: props.zoom, rotation: rot });
@@ -2556,6 +2560,9 @@ watch(
   () => documentStore.originalPdfData,
   async (newData) => {
     if (newData && newData.byteLength > 0) {
+      if (documentStore.isCommittedSave) {
+        return;
+      }
       const isRestored = Boolean(documentStore.restoredSession);
       if (isRestored) {
         const restored = documentStore.restoredSession;
@@ -2568,15 +2575,20 @@ watch(
         if (restored.autoRedactedBlockIds && Array.isArray(restored.autoRedactedBlockIds)) {
           restored.autoRedactedBlockIds.forEach(id => autoRedactedBlockIds.add(id));
         }
+        if (restored.pageBlocksMap && Object.keys(restored.pageBlocksMap).length > 0) {
+          pageBlocksMap.value = { ...restored.pageBlocksMap };
+        } else {
+          pageBlocksMap.value = {};
+        }
       } else {
         userRotations.value = {};
         for (const k of Object.keys(editedBlocksState)) {
           delete editedBlocksState[k];
         }
         autoRedactedBlockIds.clear();
+        pageBlocksMap.value = {};
       }
       isPageCanvasRendered.value = {};
-      pageBlocksMap.value = {};
       await renderAllPages(isRestored);
     }
   },
@@ -2646,10 +2658,77 @@ onBeforeUnmount(() => {
   }
 });
 
+/**
+ * Commits the current edited/redacted state as the new baseline after an in-place save.
+ * Bakes the changes into the canvas by re-loading the PDF document with newBuffer,
+ * resets the edited state on blocks, clears pending edits, and preserves block layout.
+ *
+ * @param {ArrayBuffer} newBuffer - The newly baked PDF bytes from pdf-lib
+ */
+async function commitSavedBaseline(newBuffer) {
+  // 1. Commit any currently active block
+  commitActiveBlock();
+
+  // 2. Mark every block as unedited baseline matching current text
+  for (const pageNumber in pageBlocksMap.value) {
+    const blocks = pageBlocksMap.value[pageNumber];
+    if (Array.isArray(blocks)) {
+      for (const block of blocks) {
+        if (isBlockEdited(block)) {
+          block.originalText = block.text;
+          block.originalFontSize = block.customFontSize || block.fontSize;
+          block.originalBold = block.bold;
+          block.originalItalic = block.italic;
+          block.originalColor = block.customColor || block.color;
+          block.originalWidth = block.customWidth || block.width;
+          block.originalHeight = block.currentHeight || block.height;
+          if (block.customX != null) block.originalX = block.customX;
+          if (block.customY != null) block.originalY = block.customY;
+          block.isEdited = false;
+          block.isMoved = false;
+        }
+      }
+    }
+  }
+
+  // 3. Clear tracked edits map and auto-redacted IDs
+  for (const k of Object.keys(editedBlocksState)) {
+    delete editedBlocksState[k];
+  }
+  autoRedactedBlockIds.clear();
+  documentStore.edits = [];
+
+  // 4. Update the current PDF.js document handle with newBuffer
+  try {
+    const rawPdf = toRaw(newBuffer);
+    const bufferCopy = rawPdf.slice(0);
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(bufferCopy),
+      cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/',
+      cMapPacked: true
+    });
+    currentPdfDoc = await loadingTask.promise;
+  } catch (err) {
+    console.warn('[PdfCanvasEditor] Failed to reload currentPdfDoc on baseline commit:', err);
+  }
+
+  // 5. Re-render the visible canvas pages with the newly baked PDF
+  for (const p in isPageCanvasRendered.value) {
+    isPageCanvasRendered.value[p] = false;
+  }
+  scheduleVisiblePagesRender();
+
+  // 6. Persist clean session to IndexedDB
+  saveCurrentSession();
+}
+
 defineExpose({
   buildRedactionPayload,
   getRedactionEdits: buildRedactionPayload,
-  revertAll
+  revertAll,
+  commitActiveBlock,
+  commitSavedBaseline,
+  getUserRotations: () => ({ ...userRotations.value })
 });
 </script>
 

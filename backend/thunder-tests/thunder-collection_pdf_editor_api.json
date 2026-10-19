@@ -1,0 +1,120 @@
+{
+  "clientName": "Thunder Client",
+  "collectionName": "PDF Visual Studio API",
+  "collectionId": "pdf-editor-api-col",
+  "dateExported": "2026-10-19",
+  "version": "1.1",
+  "folders": [],
+  "requests": [
+    {
+      "_id": "req-1",
+      "colId": "pdf-editor-api-col",
+      "containerId": "",
+      "name": "1. Extract Sample PDF (Authorized - Valid X-API-KEY)",
+      "url": "http://localhost:8080/api/documents/extract-sample?filename=sample-pdfs/resume.pdf",
+      "method": "POST",
+      "sortNum": 10000,
+      "created": "2026-10-19T18:30:00.000Z",
+      "modified": "2026-10-19T18:30:00.000Z",
+      "headers": [
+        {
+          "name": "X-API-KEY",
+          "value": "my_secure_secret_key_12345"
+        }
+      ],
+      "tests": [
+        {
+          "type": "res-status",
+          "custom": "",
+          "action": "equal",
+          "value": "200"
+        }
+      ]
+    },
+    {
+      "_id": "req-2",
+      "colId": "pdf-editor-api-col",
+      "containerId": "",
+      "name": "2. Extract Sample PDF (Unauthorized - Missing Key)",
+      "url": "http://localhost:8080/api/documents/extract-sample?filename=sample-pdfs/resume.pdf",
+      "method": "POST",
+      "sortNum": 20000,
+      "created": "2026-10-19T18:30:00.000Z",
+      "modified": "2026-10-19T18:30:00.000Z",
+      "headers": [],
+      "tests": [
+        {
+          "type": "res-status",
+          "custom": "",
+          "action": "equal",
+          "value": "401"
+        },
+        {
+          "type": "json-query",
+          "custom": "json.error",
+          "action": "equal",
+          "value": "Unauthorized"
+        }
+      ]
+    },
+    {
+      "_id": "req-3",
+      "colId": "pdf-editor-api-col",
+      "containerId": "",
+      "name": "3. Extract Sample PDF (Unauthorized - Invalid Key)",
+      "url": "http://localhost:8080/api/documents/extract-sample?filename=sample-pdfs/resume.pdf",
+      "method": "POST",
+      "sortNum": 30000,
+      "created": "2026-10-19T18:30:00.000Z",
+      "modified": "2026-10-19T18:30:00.000Z",
+      "headers": [
+        {
+          "name": "X-API-KEY",
+          "value": "invalid_wrong_key_999"
+        }
+      ],
+      "tests": [
+        {
+          "type": "res-status",
+          "custom": "",
+          "action": "equal",
+          "value": "401"
+        }
+      ]
+    },
+    {
+      "_id": "req-4",
+      "colId": "pdf-editor-api-col",
+      "containerId": "",
+      "name": "4. Export PDF (Authorized - Valid X-API-KEY)",
+      "url": "http://localhost:8080/api/export/pdf",
+      "method": "POST",
+      "sortNum": 40000,
+      "created": "2026-10-19T18:30:00.000Z",
+      "modified": "2026-10-19T18:30:00.000Z",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "X-API-KEY",
+          "value": "my_secure_secret_key_12345"
+        }
+      ],
+      "body": {
+        "type": "json",
+        "raw": "{\n  \"name\": \"test_export.pdf\",\n  \"pages\": [\n    {\n      \"pageNumber\": 1,\n      \"width\": 612,\n      \"height\": 792,\n      \"blocks\": []\n    }\n  ]\n}",
+        "form": []
+      },
+      "tests": [
+        {
+          "type": "res-status",
+          "custom": "",
+          "action": "equal",
+          "value": "200"
+        }
+      ]
+    }
+  ]
+}
