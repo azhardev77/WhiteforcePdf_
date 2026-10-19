@@ -91,6 +91,7 @@
                 :data-block-id="block.id"
                 :data-id="block.id"
                 :data-text="block.text"
+                :data-original-text="block.originalText"
                 :data-is-blank-line="block.isBlankLine ? 'true' : 'false'"
                 :data-is-moved="block.isMoved ? 'true' : 'false'"
                 :data-font-size="block.viewportFontSize"
@@ -290,10 +291,12 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
+import { ref, watch, nextTick, onMounted, onBeforeUnmount, toRaw } from 'vue';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { useDocumentStore } from '@/stores/document';
+import { redactPIIFromText, hasPII } from '@/utils/piiRedactor';
+import sessionStorageService from '@/services/sessionStorageService';
 
 // Configure pdfjs worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -341,7 +344,47 @@ const pristineCanvasMap = {}; // pageNumber -> HTMLCanvasElement
 // Track committed edits across page re-renders: blockId -> { newText, deltaY, currentHeight }
 const editedBlocksState = {};
 
+// Track blocks that have already undergone initial PII automatic redaction
+const autoRedactedBlockIds = new Set();
+
 let blurTimer = null;
+let sessionSaveDebounceTimer = null;
+
+function scheduleSessionSave() {
+  if (sessionSaveDebounceTimer) {
+    clearTimeout(sessionSaveDebounceTimer);
+  }
+  sessionSaveDebounceTimer = setTimeout(() => {
+    saveCurrentSession();
+    sessionSaveDebounceTimer = null;
+  }, 150);
+}
+
+function saveCurrentSession() {
+  if (!documentStore.originalPdfData || !documentStore.hasDocument) return;
+
+  try {
+    const currentEdits = buildRedactionPayload();
+    const rawPdf = toRaw(documentStore.originalPdfData);
+    const sessionData = {
+      pdfBytes: rawPdf,
+      fileName: documentStore.fileName || 'document.pdf',
+      documentModel: toRaw(documentStore.documentModel),
+      edits: currentEdits,
+      editedBlocksState: JSON.parse(JSON.stringify(editedBlocksState)),
+      autoRedactedBlockIds: Array.from(autoRedactedBlockIds),
+      viewSettings: {
+        zoom: props.zoom || documentStore.zoom || 1.25,
+        userRotations: { ...userRotations.value }
+      },
+      updatedAt: Date.now()
+    };
+
+    sessionStorageService.saveSession(sessionData);
+  } catch (err) {
+    console.warn('[Session] Failed to auto-save session:', err);
+  }
+}
 
 function isPageVisible(pageIndex) {
   if (editingBlockId.value && pageBlocksMap.value[pageIndex]?.some(b => b.id === editingBlockId.value)) {
@@ -624,6 +667,7 @@ function changeBlockFontSize(block, newSize) {
 
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  saveCurrentSession();
 }
 
 function toggleBold(block) {
@@ -640,6 +684,7 @@ function toggleBold(block) {
   };
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  saveCurrentSession();
 }
 
 function toggleItalic(block) {
@@ -656,6 +701,7 @@ function toggleItalic(block) {
   };
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  saveCurrentSession();
 }
 
 function setBlockColor(block, hexColor) {
@@ -673,6 +719,7 @@ function setBlockColor(block, hexColor) {
   };
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  saveCurrentSession();
 }
 
 function startResizeBlock(block, event) {
@@ -704,6 +751,7 @@ function startResizeBlock(block, event) {
     };
     const edits = buildRedactionPayload();
     documentStore.setEdits(edits);
+    saveCurrentSession();
   }
 
   window.addEventListener('pointermove', onResizeMove);
@@ -845,20 +893,90 @@ function applyLiveCanvasReflow(pageNumber) {
   }
 }
 
+/**
+ * Calculates a left-expanded bounding box for fully-redacted PII blocks
+ * to cover preceding vector/drawn icons, safely avoiding overlap with left siblings.
+ *
+ * @param {Object} block - The paragraph block
+ * @param {Array<Object>} pageBlocks - All blocks on the same page
+ * @returns {{ x: number, y: number, width: number, height: number }} Viewport coordinates
+ */
+function getLeftExpandedBlockBox(block, pageBlocks) {
+  const origX = block.customX != null ? block.customX : (block.originalX != null ? block.originalX : block.x);
+  const origY = block.customY != null ? block.customY : (block.originalY != null ? block.originalY : block.y);
+  const origW = block.customWidth || block.originalWidth || block.width;
+  const origH = block.originalHeight || block.height;
+
+  // Approx 16px–22px left expansion based on line height
+  const padLeft = (origH || 14) * 1.6;
+  let expandedX = Math.max(0, origX - padLeft);
+  const boxTop = origY;
+  const boxBottom = origY + origH;
+
+  for (const sibling of pageBlocks) {
+    if (sibling.id === block.id) continue;
+    // Check if sibling is a valid, non-redacted text block
+    const siblingText = (editingBlockId.value === sibling.id ? activeBlockText.value : sibling.text);
+    if (!siblingText || siblingText.trim().length === 0) continue;
+
+    const sibX = sibling.customX != null ? sibling.customX : (sibling.originalX != null ? sibling.originalX : sibling.x);
+    const sibY = sibling.customY != null ? sibling.customY : (sibling.originalY != null ? sibling.originalY : sibling.y);
+    const sibW = sibling.customWidth || sibling.originalWidth || sibling.width;
+    const sibH = sibling.originalHeight || sibling.height;
+    const sibTop = sibY;
+    const sibBottom = sibY + sibH;
+
+    // Check vertical overlap on same baseline / horizontal band
+    const yOverlap = Math.max(0, Math.min(boxBottom, sibBottom) - Math.max(boxTop, sibTop));
+    if (yOverlap > 3) {
+      const sibRight = sibX + sibW;
+      // If sibling is to the left of the redacted block
+      if (sibRight <= origX && sibRight > expandedX) {
+        // Clamp redactX to the right edge of any adjacent left sibling box (+ 2px safety)
+        expandedX = Math.min(origX, sibRight + 2);
+      }
+    }
+  }
+
+  const expandedWidth = origW + (origX - expandedX);
+  return {
+    x: expandedX,
+    y: origY,
+    width: expandedWidth,
+    height: origH
+  };
+}
+
 function getPageWhiteoutMasks(pageIndex) {
   const blocks = pageBlocksMap.value[pageIndex] || [];
   if (blocks.length === 0) return [];
 
   const masks = [];
   for (const block of blocks) {
-    const isEdited = isBlockEdited(block) || editingBlockId.value === block.id;
+    const isEditing = editingBlockId.value === block.id;
+    const isEdited = isBlockEdited(block) || isEditing;
     if (!isEdited) continue;
     // CRITICAL: Blank line blocks with transparent background MUST NOT whiteout the line!
     if (block.isBlankLine || block.transparentBackground) {
       continue;
     }
 
-    if (block.lines && block.lines.length > 1) {
+    const currentText = isEditing ? activeBlockText.value : block.text;
+    const isFullyRedacted = (!currentText || currentText.trim().length === 0);
+    const isPiiBlock = hasPII(block.originalText) || autoRedactedBlockIds.has(block.id);
+
+    if (isFullyRedacted && isPiiBlock) {
+      const exp = getLeftExpandedBlockBox(block, blocks);
+      masks.push({
+        id: `mask-${block.id}`,
+        style: {
+          left: `${Math.round(exp.x)}px`,
+          top: `${Math.round(exp.y)}px`,
+          width: `${Math.round(exp.width + 1)}px`,
+          height: `${Math.round(exp.height + 1)}px`
+        }
+      });
+    } else if (block.lines && block.lines.length > 1) {
       for (let lIdx = 0; lIdx < block.lines.length; lIdx++) {
         const line = block.lines[lIdx];
         masks.push({
@@ -1094,6 +1212,7 @@ function startDragBlock(block, event) {
 
       const edits = buildRedactionPayload();
       documentStore.setEdits(edits);
+      saveCurrentSession();
     }
   }
 
@@ -1204,6 +1323,7 @@ function onParagraphInput(block, event) {
   // Synchronize redaction payload with store
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  scheduleSessionSave();
 }
 
 function commitActiveBlock() {
@@ -1278,6 +1398,7 @@ function commitActiveBlock() {
 
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  saveCurrentSession();
 }
 
 function cancelBlockEdit(block) {
@@ -1334,6 +1455,48 @@ function revertBlock(block) {
   updatePageVerticalReflow(block.pageNumber);
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  saveCurrentSession();
+}
+
+/**
+ * Reverts all blocks across all pages back to their original text and coordinates.
+ */
+function revertAll() {
+  for (const blockId of Object.keys(editedBlocksState)) {
+    delete editedBlocksState[blockId];
+  }
+  for (const [pageNumStr, blocks] of Object.entries(pageBlocksMap.value)) {
+    for (const block of blocks) {
+      if (block.isEdited || block.isMoved) {
+        block.text = block.originalText;
+        block.isEdited = false;
+        block.isMoved = false;
+        block.customX = undefined;
+        block.customY = undefined;
+        block.customWidth = undefined;
+        block.width = block.originalWidth;
+        block.customFontSize = null;
+        block.fontSize = block.originalFontSize || block.fontSize;
+        block.viewportFontSize = (block.fontSize || 11) * (props.zoom || 1);
+        block.customColor = null;
+        block.color = block.originalColor || '#000000';
+        block.bold = block.originalBold;
+        block.italic = block.originalItalic;
+        block.x = block.originalX;
+        block.y = block.originalY;
+        block.deltaY = 0;
+        block.currentHeight = block.originalHeight;
+      }
+    }
+    updatePageVerticalReflow(Number(pageNumStr));
+  }
+  editingBlockId.value = null;
+  activeBlockText.value = '';
+  activeDeltaY.value = 0;
+  reflowVersion.value++;
+  documentStore.edits = [];
+  documentStore.activeBlockId = null;
+  saveCurrentSession();
 }
 
 /**
@@ -1357,24 +1520,44 @@ function buildRedactionPayload() {
       const currentText = isActivelyEditing ? activeBlockText.value : block.text;
       if (currentText === block.originalText && !isActivelyEditing && !isMoved && !block.customFontSize && !block.customColor) continue;
 
-      const rawOriginalBbox = [
-        block.originalPdfX,
-        block.originalPdfY,
-        block.originalPdfWidth,
-        block.originalPdfHeight
-      ];
-      const effectiveOriginalBbox = getRotatedBbox(rawOriginalBbox, pageNumber);
+      const isFullyRedacted = (!currentText || currentText.trim().length === 0);
+      const isPiiBlock = hasPII(block.originalText) || autoRedactedBlockIds.has(block.id);
 
-      const targetX = block.customX != null ? block.customX : block.originalX;
-      const targetY = block.customY != null ? block.customY : block.y;
+      let effectiveOriginalBbox;
+      let effectiveNewBbox;
 
-      const rawNewBbox = [
-        targetX / scale,
-        targetY / scale,
-        block.originalPdfWidth,
-        block.originalPdfHeight
-      ];
-      const effectiveNewBbox = getRotatedBbox(rawNewBbox, pageNumber);
+      if (isFullyRedacted && isPiiBlock) {
+        const exp = getLeftExpandedBlockBox(block, blocks);
+        const expPdfX = exp.x / scale;
+        const expPdfWidth = exp.width / scale;
+        const expPdfY = exp.y / scale;
+        const expPdfHeight = exp.height / scale;
+
+        const rawOriginalBbox = [expPdfX, expPdfY, expPdfWidth, expPdfHeight];
+        effectiveOriginalBbox = getRotatedBbox(rawOriginalBbox, pageNumber);
+
+        const rawNewBbox = [expPdfX, expPdfY, expPdfWidth, expPdfHeight];
+        effectiveNewBbox = getRotatedBbox(rawNewBbox, pageNumber);
+      } else {
+        const rawOriginalBbox = [
+          block.originalPdfX,
+          block.originalPdfY,
+          block.originalPdfWidth,
+          block.originalPdfHeight
+        ];
+        effectiveOriginalBbox = getRotatedBbox(rawOriginalBbox, pageNumber);
+
+        const targetX = block.customX != null ? block.customX : block.originalX;
+        const targetY = block.customY != null ? block.customY : block.y;
+
+        const rawNewBbox = [
+          targetX / scale,
+          targetY / scale,
+          block.originalPdfWidth,
+          block.originalPdfHeight
+        ];
+        effectiveNewBbox = getRotatedBbox(rawNewBbox, pageNumber);
+      }
 
       allEdits.push({
         id: `redact-block-${block.id}`,
@@ -1540,7 +1723,7 @@ function unrenderPage(pageNumber) {
   }
 }
 
-async function renderAllPages() {
+async function renderAllPages(isRestored = false) {
   if (!documentStore.originalPdfData) return;
 
   try {
@@ -1556,6 +1739,23 @@ async function renderAllPages() {
 
     await prefetchPageViewports();
 
+    // Initial layout extraction and PII redaction across all pages of the document
+    for (let p = 1; p <= numPages.value; p++) {
+      try {
+        const page = await currentPdfDoc.getPage(p);
+        const rot = userRotations.value[p] || 0;
+        const vp = page.getViewport({ scale: props.zoom, rotation: rot });
+        const textContent = await page.getTextContent();
+        extractParagraphBlocks(p, textContent, vp, null, isRestored);
+      } catch (err) {
+        console.warn(`Initial block extraction for page ${p} failed:`, err);
+      }
+    }
+
+    // Immediately record auto-redactions/restored edits into store so toolbar counters and Revert All light up
+    const currentEdits = buildRedactionPayload();
+    documentStore.setEdits(currentEdits);
+
     visiblePages.value = { 1: true };
     if (numPages.value > 1) {
       visiblePages.value[2] = true;
@@ -1563,6 +1763,7 @@ async function renderAllPages() {
 
     await setupIntersectionObserver();
     scheduleVisiblePagesRender();
+    saveCurrentSession();
   } catch (err) {
     console.error('Failed to render PDF pages:', err);
     documentStore.errorMessage = `Failed to render PDF: ${err.message}`;
@@ -1596,6 +1797,7 @@ async function rotatePage(pageNumber, delta = 90) {
   if (isPageVisible(pageNumber)) {
     await renderPage(pageNumber);
   }
+  saveCurrentSession();
 }
 
 async function renderPage(pageNumber) {
@@ -1672,7 +1874,8 @@ async function renderPage(pageNumber) {
 
     // Extract text content and group into WPS Office-Style Paragraph Blocks
     const textContent = await page.getTextContent();
-    extractParagraphBlocks(pageNumber, textContent, viewport, pristineClone);
+    const isRestored = Boolean(documentStore.isRestoredSession);
+    extractParagraphBlocks(pageNumber, textContent, viewport, pristineClone, isRestored);
     scanAndAppendCanvasBlankLines(pageNumber, pristineClone, viewport);
     updatePageVerticalReflow(pageNumber);
 
@@ -1689,7 +1892,7 @@ async function renderPage(pageNumber) {
  * WPS Office-Style Paragraph Block Grouping:
  * Groups lines into logical Paragraph Blocks with bounding boxes and reflow capability.
  */
-function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanvas = null) {
+function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanvas = null, isRestored = false) {
   const rawItems = [];
 
   for (let idx = 0; idx < textContent.items.length; idx++) {
@@ -1991,7 +2194,7 @@ function areColorsMatching(c1, c2) {
     blocks.push(currentBlock);
   }
 
-  // 4. Restore any existing edits for this page
+  // 4. Restore any existing edits for this page, or apply automatic PII redaction
   for (const block of blocks) {
     if (editedBlocksState[block.id]) {
       const state = editedBlocksState[block.id];
@@ -1999,12 +2202,77 @@ function areColorsMatching(c1, c2) {
       block.isEdited = (block.text !== block.originalText) || Boolean(state.isMoved);
       block.deltaY = state.deltaY || 0;
       block.currentHeight = state.currentHeight || block.originalHeight;
+      if (state.customFontSize != null) {
+        block.customFontSize = state.customFontSize;
+        block.viewportFontSize = state.customFontSize * (props.zoom || 1);
+      }
+      if (state.customColor != null) {
+        block.customColor = state.customColor;
+        block.color = state.customColor;
+      }
+      if (state.customWidth != null) {
+        block.customWidth = state.customWidth;
+        block.width = state.customWidth;
+      }
+      if (state.bold != null) block.bold = state.bold;
+      if (state.italic != null) block.italic = state.italic;
       if (state.isMoved) {
         block.isMoved = true;
         block.customX = state.customX;
         block.customY = state.customY;
         block.x = state.customX;
         block.y = state.customY;
+      }
+    } else if (!autoRedactedBlockIds.has(block.id) && !isRestored) {
+      autoRedactedBlockIds.add(block.id);
+      if (!block.isBlankLine && hasPII(block.text)) {
+        const cleanedText = redactPIIFromText(block.text);
+        if (cleanedText !== block.text) {
+          block.text = cleanedText;
+          block.isEdited = true;
+          editedBlocksState[block.id] = {
+            newText: cleanedText,
+            deltaY: 0,
+            currentHeight: block.currentHeight || block.originalHeight
+          };
+        }
+      }
+    }
+  }
+
+  // 5. Scan for tiny sibling icon boxes immediately to the left of redacted PII blocks
+  if (!isRestored) {
+    for (const piiBox of blocks) {
+      if (!piiBox.isEdited || piiBox.isBlankLine) continue;
+      const isPiiRedacted = hasPII(piiBox.originalText) || (piiBox.text === '' && autoRedactedBlockIds.has(piiBox.id));
+      if (!isPiiRedacted) continue;
+
+      for (const sibling of blocks) {
+        if (sibling.id === piiBox.id || sibling.isBlankLine) continue;
+        const sibW = sibling.originalWidth || sibling.width;
+        const isTiny = sibW < (25 * viewport.scale);
+        if (!isTiny) continue;
+
+        const sameBaseline = Math.abs(sibling.y - piiBox.y) < (6 * viewport.scale);
+        if (!sameBaseline) continue;
+
+        const sibRight = sibling.x + sibW;
+        const gap = piiBox.x - sibRight;
+        const isImmediatelyLeft = sibling.x < piiBox.x && gap >= -2 && gap < (18 * viewport.scale);
+        if (!isImmediatelyLeft) continue;
+
+        const textTrim = (sibling.text || '').trim();
+        const isIconGlyph = textTrim.length <= 2 || !/[a-zA-Z0-9]/.test(textTrim) || /^[\u2600-\u27BF\uE000-\uF8FF\uD83C-\uDBFF\uDC00-\uDFFF✉☎✆📞📧📱📍\s]+$/.test(textTrim);
+        if (isIconGlyph) {
+          sibling.text = '';
+          sibling.isEdited = true;
+          autoRedactedBlockIds.add(sibling.id);
+          editedBlocksState[sibling.id] = {
+            newText: '',
+            deltaY: 0,
+            currentHeight: sibling.originalHeight
+          };
+        }
       }
     }
   }
@@ -2288,13 +2556,41 @@ watch(
   () => documentStore.originalPdfData,
   async (newData) => {
     if (newData && newData.byteLength > 0) {
-      userRotations.value = {};
+      const isRestored = Boolean(documentStore.restoredSession);
+      if (isRestored) {
+        const restored = documentStore.restoredSession;
+        if (restored.viewSettings?.userRotations) {
+          userRotations.value = { ...restored.viewSettings.userRotations };
+        }
+        if (restored.editedBlocksState) {
+          Object.assign(editedBlocksState, restored.editedBlocksState);
+        }
+        if (restored.autoRedactedBlockIds && Array.isArray(restored.autoRedactedBlockIds)) {
+          restored.autoRedactedBlockIds.forEach(id => autoRedactedBlockIds.add(id));
+        }
+      } else {
+        userRotations.value = {};
+        for (const k of Object.keys(editedBlocksState)) {
+          delete editedBlocksState[k];
+        }
+        autoRedactedBlockIds.clear();
+      }
       isPageCanvasRendered.value = {};
       pageBlocksMap.value = {};
-      await renderAllPages();
+      await renderAllPages(isRestored);
     }
   },
   { immediate: true }
+);
+
+watch(
+  () => documentStore.edits,
+  (newEdits) => {
+    if ((!newEdits || newEdits.length === 0) && Object.keys(editedBlocksState).length > 0) {
+      revertAll();
+    }
+  },
+  { deep: false }
 );
 
 watch(
@@ -2319,6 +2615,7 @@ watch(
 
       await nextTick();
       scheduleVisiblePagesRender();
+      scheduleSessionSave();
     }
   }
 );
@@ -2326,10 +2623,10 @@ watch(
 onMounted(async () => {
   if (typeof window !== 'undefined') {
     window.__buildRedactionPayload = buildRedactionPayload;
+    window.__revertAll = revertAll;
     window.__documentStore = documentStore;
-  }
-  if (documentStore.originalPdfData && documentStore.originalPdfData.byteLength > 0) {
-    await renderAllPages();
+    window.__saveCurrentSession = saveCurrentSession;
+    window.__sessionStorageService = sessionStorageService;
   }
 });
 
@@ -2351,7 +2648,8 @@ onBeforeUnmount(() => {
 
 defineExpose({
   buildRedactionPayload,
-  getRedactionEdits: buildRedactionPayload
+  getRedactionEdits: buildRedactionPayload,
+  revertAll
 });
 </script>
 

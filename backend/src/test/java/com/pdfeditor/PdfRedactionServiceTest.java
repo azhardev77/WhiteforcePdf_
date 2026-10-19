@@ -9,6 +9,7 @@ import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -321,4 +322,62 @@ class PdfRedactionServiceTest {
             assertThat(extracted).contains("Tender Enquiry M19282 (Relocated)");
         }
     }
+
+    @Test
+    @DisplayName("Email and phone number redaction: empty replacement text whites out email and replaces mixed phone text")
+    void testAutomaticEmailAndPhoneRedactionExport() throws IOException {
+        byte[] originalPdf;
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(new PDRectangle(0, 0, 612, 792));
+            doc.addPage(page);
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                PDFont font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+                cs.beginText();
+                cs.setFont(font, 12);
+                cs.newLineAtOffset(50, 720);
+                cs.showText("Jabalpur | +91-7879797876");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(font, 12);
+                cs.newLineAtOffset(50, 690);
+                cs.showText("azharmansoori729@gmail.com");
+                cs.endText();
+            }
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            doc.save(baos);
+            originalPdf = baos.toByteArray();
+        }
+
+        // Edit 1: Pure email redaction (newText is empty string)
+        TextRedactionEdit emailEdit = new TextRedactionEdit(
+                1,
+                new double[]{50.0, 95.0, 200.0, 20.0},
+                "azharmansoori729@gmail.com",
+                "",
+                Style.of("Helvetica", 12.0, false, false, "#000000"),
+                "#FFFFFF"
+        );
+
+        // Edit 2: Mixed text with stripped phone number (newText is "Jabalpur")
+        TextRedactionEdit phoneEdit = new TextRedactionEdit(
+                1,
+                new double[]{50.0, 65.0, 200.0, 20.0},
+                "Jabalpur | +91-7879797876",
+                "Jabalpur",
+                Style.of("Helvetica", 12.0, false, false, "#000000"),
+                "#FFFFFF"
+        );
+
+        byte[] modifiedPdf = pdfRedactionService.redactAndReplace(originalPdf, List.of(emailEdit, phoneEdit));
+        assertThat(modifiedPdf).isNotNull().isNotEmpty();
+
+        try (PDDocument doc = Loader.loadPDF(modifiedPdf)) {
+            assertThat(doc.getNumberOfPages()).isEqualTo(1);
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extracted = stripper.getText(doc);
+            assertThat(extracted).contains("Jabalpur");
+        }
+    }
 }
+

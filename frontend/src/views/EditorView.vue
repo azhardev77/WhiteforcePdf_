@@ -3,7 +3,12 @@
     <!-- Top Header Bar -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand-badge">
+        <div
+          class="brand-badge"
+          :class="{ 'is-clickable': documentStore.hasDocument }"
+          :title="documentStore.hasDocument ? 'Click to close document and return to upload screen' : 'PDF Visual Studio'"
+          @click="handleLogoClick"
+        >
           <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
             <polyline points="14 2 14 8 20 8" />
@@ -21,6 +26,7 @@
             class="document-title-input"
             title="Click to rename document"
             placeholder="Document Name"
+            @change="handleFileNameChange"
           />
           <span class="badge-status">
             {{ documentStore.pageCount }} {{ documentStore.pageCount === 1 ? 'Page' : 'Pages' }}
@@ -32,12 +38,22 @@
       </div>
 
       <div class="header-right">
+        <!-- Hidden File Input for Header "Open File" Button -->
+        <input
+          ref="headerFileInputRef"
+          type="file"
+          accept="application/pdf"
+          class="hidden-file-input"
+          style="display: none"
+          @change="handleFileInput"
+        />
+
         <button
           v-if="documentStore.hasDocument"
           type="button"
           class="btn-secondary"
           title="Upload another PDF or create blank document"
-          @click="confirmReset"
+          @click="triggerOpenNewFile"
         >
           <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -45,6 +61,20 @@
             <line x1="12" y1="3" x2="12" y2="15" />
           </svg>
           <span>Open File</span>
+        </button>
+
+        <button
+          v-if="documentStore.hasDocument"
+          type="button"
+          class="btn-secondary btn-close-doc"
+          title="Close current document and clear saved session"
+          @click="handleCloseDocument"
+        >
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+          <span>Close</span>
         </button>
 
         <button
@@ -85,13 +115,14 @@
       v-if="documentStore.hasDocument"
       :is-exporting="documentStore.isExporting"
       @export="handleExport"
+      @revert-all="handleRevertAll"
     />
 
     <!-- Main Workspace Content -->
     <main class="editor-workspace">
-      <!-- State 1: Dropzone Upload View when no document loaded -->
+      <!-- State 1: Dropzone Upload View when no document loaded and not hydrating -->
       <section
-        v-if="!documentStore.hasDocument"
+        v-if="!documentStore.hasDocument && !isHydrating"
         class="upload-dropzone-container"
         @dragover.prevent="isDragging = true"
         @dragleave.prevent="isDragging = false"
@@ -174,6 +205,13 @@
         </div>
       </section>
 
+      <!-- State 1.5: Seamless Hydration Loading Overlay -->
+      <div v-else-if="isHydrating" class="session-hydrating-container">
+        <div class="spinner-large" />
+        <h3 class="loading-title">Restoring Workspace Session...</h3>
+        <p class="loading-subtext">Restoring PDF document, canvas layout, and active edits from local storage.</p>
+      </div>
+
       <!-- State 2: 100% Pixel-Perfect PDF.js Canvas with Interactive Overlay -->
       <PdfCanvasEditor
         v-else
@@ -203,14 +241,63 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useDocumentStore } from '@/stores/document';
 import EditorToolbar from '@/components/EditorToolbar.vue';
 import PdfCanvasEditor from '@/components/PdfCanvasEditor.vue';
+import sessionStorageService from '@/services/sessionStorageService';
 
 const documentStore = useDocumentStore();
 
 const isDragging = ref(false);
+const isHydrating = ref(true);
+const headerFileInputRef = ref(null);
+const canvasEditorRef = ref(null);
+
+onMounted(async () => {
+  try {
+    const session = await sessionStorageService.loadSession();
+    if (session && session.pdfBytes && session.pdfBytes.byteLength > 0) {
+      documentStore.restoreSession(session);
+    }
+  } catch (err) {
+    console.warn('[Session] Failed to restore session on mount:', err);
+  } finally {
+    isHydrating.value = false;
+  }
+});
+
+function triggerOpenNewFile() {
+  if (headerFileInputRef.value) {
+    headerFileInputRef.value.value = '';
+    headerFileInputRef.value.click();
+  }
+}
+
+async function handleLogoClick() {
+  if (documentStore.hasDocument) {
+    await handleCloseDocument();
+  }
+}
+
+async function handleCloseDocument() {
+  if (window.confirm('Close current document and return to upload screen?')) {
+    await sessionStorageService.clearSession();
+    documentStore.resetDocument();
+  }
+}
+
+async function handleFileNameChange() {
+  try {
+    const session = await sessionStorageService.loadSession();
+    if (session) {
+      session.fileName = documentStore.fileName;
+      await sessionStorageService.saveSession(session);
+    }
+  } catch (err) {
+    console.warn('[Session] Failed to update fileName in session:', err);
+  }
+}
 
 async function handleFileDrop(event) {
   isDragging.value = false;
@@ -256,8 +343,6 @@ async function loadResumeDocument() {
   }
 }
 
-const canvasEditorRef = ref(null);
-
 async function handleExport() {
   try {
     if (canvasEditorRef.value?.buildRedactionPayload) {
@@ -270,10 +355,14 @@ async function handleExport() {
   }
 }
 
-function confirmReset() {
-  if (window.confirm('Open another file? Any unsaved edits will be discarded.')) {
-    documentStore.resetDocument();
+function handleRevertAll() {
+  if (canvasEditorRef.value?.revertAll) {
+    canvasEditorRef.value.revertAll();
   }
+}
+
+function confirmReset() {
+  triggerOpenNewFile();
 }
 </script>
 
@@ -693,5 +782,36 @@ function confirmReset() {
   to {
     transform: rotate(360deg);
   }
+}
+
+.session-hydrating-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 40px;
+}
+
+.brand-badge.is-clickable {
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.brand-badge.is-clickable:hover {
+  opacity: 0.85;
+}
+
+.btn-close-doc {
+  background-color: transparent;
+  border-color: #475569;
+  color: #94a3b8;
+}
+
+.btn-close-doc:hover {
+  background-color: rgba(239, 68, 68, 0.15);
+  border-color: #ef4444;
+  color: #f87171;
 }
 </style>

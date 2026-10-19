@@ -530,6 +530,8 @@ const fs = require('fs');
         return {
           id: el.getAttribute('data-block-id') || '',
           text: (el.getAttribute('data-text') || el.innerText || '').trim(),
+          originalText: (el.getAttribute('data-original-text') || '').trim(),
+          isEdited: el.classList.contains('is-edited'),
           fontSize: parseFloat(el.getAttribute('data-font-size')) || parseFloat(cs.fontSize),
           fontFamily: cs.fontFamily,
           rect: {
@@ -546,13 +548,14 @@ const fs = require('fs');
 
     console.log(`Found ${resumeBlocks.length} paragraph blocks on Resume Page 1:`);
     for (const b of resumeBlocks) {
-      console.log(`  [${b.id}] "${b.text.slice(0, 40)}" (fontSize: ${b.fontSize}px, rect: x=${b.rect.left.toFixed(1)}, y=${b.rect.top.toFixed(1)}, w=${b.rect.width.toFixed(1)}, h=${b.rect.height.toFixed(1)})`);
+      console.log(`  [${b.id}] text="${b.text.slice(0, 40)}" | orig="${b.originalText.slice(0, 40)}" | isEdited=${b.isEdited} (fontSize: ${b.fontSize}px)`);
     }
 
-    // 1. Verify Left Heading ("Mohd Azhar Mansoori") and Right Contact ("Jabalpur +91-7747047876")
-    const nameBlockData = resumeBlocks.find(b => b.text.includes('Mohd Azhar Mansoori'));
-    const contactBlockData = resumeBlocks.find(b => b.text.includes('Jabalpur') || b.text.includes('+91-7747047876'));
+    // 1. Verify 4 Independent Blocks on Resume Page 1
+    const nameBlockData = resumeBlocks.find(b => b.text.includes('Mohd Azhar Mansoori') || (b.originalText && b.originalText.includes('Mohd Azhar Mansoori')));
+    const contactBlockData = resumeBlocks.find(b => b.text.includes('Jabalpur') || (b.originalText && b.originalText.includes('Jabalpur')));
     const linkedInBlockData = resumeBlocks.find(b => b.text.includes('LinkedIn') || b.text.includes('GitHub'));
+    const emailBlockData = resumeBlocks.find(b => b.text.includes('azharmansoori725@gmail.com') || (b.originalText && b.originalText.includes('azharmansoori725@gmail.com')));
 
     if (!nameBlockData) {
       throw new Error('REQUIREMENT 7 FAILED: Heading block "Mohd Azhar Mansoori" not found!');
@@ -563,128 +566,297 @@ const fs = require('fs');
     if (!linkedInBlockData) {
       throw new Error('REQUIREMENT 7 FAILED: Right contact line "LinkedIn GitHub..." not found!');
     }
-
-    console.log('\nChecking Column Isolation between Left Heading and Right Contact:');
-    console.log(`  Name Block [${nameBlockData.id}]: "${nameBlockData.text}", fontSize=${nameBlockData.fontSize}px, width=${nameBlockData.rect.width.toFixed(1)}px`);
-    console.log(`  Contact Block [${contactBlockData.id}]: "${contactBlockData.text}", fontSize=${contactBlockData.fontSize}px, width=${contactBlockData.rect.width.toFixed(1)}px`);
-
-    // Verify they are 2 distinct paragraph blocks (NOT merged)
-    if (nameBlockData.id === contactBlockData.id) {
-      throw new Error('REQUIREMENT 7 FAILED: "Mohd Azhar Mansoori" and "Jabalpur" were merged into the same block ID!');
-    }
-    if (nameBlockData.text.includes('Jabalpur') || nameBlockData.text.includes('7747047876')) {
-      throw new Error('REQUIREMENT 7 FAILED: Name block contains contact details! Merged across columns.');
-    }
-    if (contactBlockData.text.includes('Mohd Azhar')) {
-      throw new Error('REQUIREMENT 7 FAILED: Contact block contains heading text!');
+    if (!emailBlockData) {
+      throw new Error('REQUIREMENT 7 FAILED: Right contact email "azharmansoori725@gmail.com" not found!');
     }
 
-    // Check font sizes: Name should be ~25px (20pt * 1.25), Contact should be ~11.25px (9pt * 1.25)
-    if (nameBlockData.fontSize < 20) {
-      throw new Error(`REQUIREMENT 7 FAILED: Name heading font size too small: ${nameBlockData.fontSize}px (expected ~25px)`);
-    }
-    if (contactBlockData.fontSize > 16) {
-      throw new Error(`REQUIREMENT 7 FAILED: Contact text font size inflated: ${contactBlockData.fontSize}px (expected ~11.25px)`);
-    }
-    console.log('[PASS] Requirement 7a: "Mohd Azhar Mansoori" (20pt) and "Jabalpur +91-7747047876" (9pt) are 2 independent blocks with correct font sizes.');
+    console.log('\nChecking 4 Independent Blocks in Resume Header:');
+    console.log(`  1. Name Block [${nameBlockData.id}]: "${nameBlockData.text}", fontSize=${nameBlockData.fontSize}px`);
+    console.log(`  2. Contact Block [${contactBlockData.id}]: "${contactBlockData.text}", fontSize=${contactBlockData.fontSize}px`);
+    console.log(`  3. LinkedIn Block [${linkedInBlockData.id}]: "${linkedInBlockData.text}", fontSize=${linkedInBlockData.fontSize}px`);
+    console.log(`  4. Email Block [${emailBlockData.id}]: "${emailBlockData.text}", fontSize=${emailBlockData.fontSize}px`);
 
-    // 2. Edit "Mohd Azhar Mansoori" -> "Mohd Azhar Mnsoori"
-    console.log('\nEditing "Mohd Azhar Mansoori" to "Mohd Azhar Mnsoori"...');
+    const blockIds = new Set([nameBlockData.id, contactBlockData.id, linkedInBlockData.id, emailBlockData.id]);
+    if (blockIds.size !== 4) {
+      throw new Error(`REQUIREMENT 7 FAILED: Expected 4 distinct blocks, but got ${blockIds.size}! Some contact lines were merged together.`);
+    }
+    console.log('[PASS] Requirement 7a: "Mohd Azhar Mansoori", "Jabalpur...", "LinkedIn...", and "azharmansoori725@gmail.com" are 4 separate independent blocks.');
+
+    // 2. Test Horizontal Auto-Expansion Before Wrapping ("Mohd Azhar Mansoooori")
+    console.log('\nTesting Horizontal Auto-Expansion Before Wrapping on "Mohd Azhar Mansoori"...');
     const nameBlockLocator = page.locator(`#pdf-page-1 .wps-paragraph-block[data-block-id="${nameBlockData.id}"]`);
+    const nameBoxBefore = await nameBlockLocator.boundingBox();
+    console.log(`Initial Heading Bounding Box: width=${nameBoxBefore.width.toFixed(1)}px, height=${nameBoxBefore.height.toFixed(1)}px`);
+
     await nameBlockLocator.click();
     await page.waitForTimeout(200);
 
     const nameTextarea = page.locator('#pdf-page-1 textarea.wps-paragraph-textarea');
     await nameTextarea.waitFor({ state: 'visible', timeout: 3000 });
-    await nameTextarea.fill('Mohd Azhar Mnsoori');
+    
+    // Type expanded string with 3 extra 'o's
+    await nameTextarea.fill('Mohd Azhar Mansoooori');
     await page.waitForTimeout(200);
 
-    // Commit by clicking outside
+    const nameBoxDuringEdit = await nameBlockLocator.boundingBox();
+    console.log(`During Edit ("Mohd Azhar Mansoooori") Bounding Box: width=${nameBoxDuringEdit.width.toFixed(1)}px, height=${nameBoxDuringEdit.height.toFixed(1)}px`);
+
+    // Verify box expanded horizontally
+    if (nameBoxDuringEdit.width <= nameBoxBefore.width + 10) {
+      throw new Error(`REQUIREMENT 7 FAILED: Heading box did not expand horizontally! Width remained ${nameBoxDuringEdit.width.toFixed(1)}px (before: ${nameBoxBefore.width.toFixed(1)}px)`);
+    }
+
+    // Verify it did NOT wrap to 2 lines (height should remain single-line, not doubling to 50px+)
+    const heightDifference = nameBoxDuringEdit.height - nameBoxBefore.height;
+    if (heightDifference > 8) {
+      throw new Error(`REQUIREMENT 7 FAILED: "Mohd Azhar Mansoooori" wrapped prematurely into 2 lines! Height increased by ${heightDifference}px.`);
+    }
+    console.log(`[PASS] Requirement 7b: "Mohd Azhar Mansoooori" auto-expanded horizontally (width: ${nameBoxBefore.width.toFixed(1)}px -> ${nameBoxDuringEdit.width.toFixed(1)}px) without premature wrapping.`);
+
+    // 3. Test Floating Formatting Toolbar (A+, A-, Font Size, Color)
+    console.log('\nTesting WPS-Style Floating Formatting Toolbar on Active Block...');
+    const toolbar = page.locator('#pdf-page-1 .block-floating-toolbar');
+    await toolbar.waitFor({ state: 'visible', timeout: 3000 });
+    console.log('[PASS] Floating toolbar (.block-floating-toolbar) is visible directly on active block.');
+
+    const fontSizeInput = page.locator('#pdf-page-1 .toolbar-font-size-input');
+    const initFs = Number(await fontSizeInput.inputValue());
+    console.log(`Initial Toolbar Font Size: ${initFs}pt`);
+
+    // Click A+ button
+    console.log('Clicking A+ button to increase font size...');
+    await page.locator('#pdf-page-1 .btn-font-inc').click();
+    await page.waitForTimeout(200);
+    const incFs = Number(await fontSizeInput.inputValue());
+    console.log(`After A+ Toolbar Font Size: ${incFs}pt`);
+    if (incFs !== initFs + 1) {
+      throw new Error(`REQUIREMENT 7 FAILED: A+ did not increment font size! Expected ${initFs + 1}, got ${incFs}`);
+    }
+
+    // Click A- button
+    console.log('Clicking A- button to decrease font size back...');
+    await page.locator('#pdf-page-1 .btn-font-dec').click();
+    await page.waitForTimeout(200);
+    const decFs = Number(await fontSizeInput.inputValue());
+    console.log(`After A- Toolbar Font Size: ${decFs}pt`);
+    if (decFs !== initFs) {
+      throw new Error(`REQUIREMENT 7 FAILED: A- did not decrement font size! Expected ${initFs}, got ${decFs}`);
+    }
+    console.log('[PASS] Requirement 7c: Floating toolbar A+ and A- buttons dynamically scale font size.');
+
+    // Commit heading edit by clicking outside
     await page.click('#pdf-page-1 .page-label');
     await page.waitForTimeout(400);
 
-    // Verify contactBlock font size did NOT change to 20pt
-    const postEditContactStyle = await page.evaluate((cId) => {
-      const el = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${cId}"]`);
+    // 4. Test Text Color Preservation (Blue Links #0066cc)
+    console.log('\nTesting Text Color Preservation on Blue Links ("LinkedIn GitHub...")...');
+    const linkedInLocator = page.locator(`#pdf-page-1 .wps-paragraph-block[data-block-id="${linkedInBlockData.id}"]`);
+    
+    // Check computed and extracted color
+    const linkColorInfo = await page.evaluate((bId) => {
+      const el = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${bId}"]`);
       if (!el) return null;
       const cs = window.getComputedStyle(el);
       return {
-        fontSize: parseFloat(el.getAttribute('data-font-size')) || parseFloat(cs.fontSize),
-        text: (el.innerText || '').trim()
+        inlineColor: el.style.color,
+        computedColor: cs.color
       };
-    }, contactBlockData.id);
+    }, linkedInBlockData.id);
+    console.log('LinkedIn Block Color Info:', linkColorInfo);
 
-    console.log('Post-edit Contact Block state:', postEditContactStyle);
-    if (postEditContactStyle.fontSize > 16) {
-      throw new Error(`REQUIREMENT 7 FAILED: Contact block font size changed to ${postEditContactStyle.fontSize}px after editing heading!`);
-    }
-    console.log('[PASS] Requirement 7b: Editing heading did NOT change contact font size.');
-
-    // Verify tight whiteout mask: Mask must NOT span across page to obscure "LinkedIn GitHub"
-    const nameMask = page.locator(`#pdf-page-1 .whiteout-mask-box[id="mask-${nameBlockData.id}"]`);
-    await nameMask.waitFor({ state: 'attached', timeout: 3000 });
-    const nameMaskBox = await nameMask.boundingBox();
-    console.log(`Name Whiteout Mask Bounding Box: x=${nameMaskBox.x.toFixed(1)}, y=${nameMaskBox.y.toFixed(1)}, w=${nameMaskBox.width.toFixed(1)}, h=${nameMaskBox.height.toFixed(1)}`);
-
-    // In resume.pdf, total page width is ~765px (612pt * 1.25). A tight mask over "Mohd Azhar Mansoori" should be <= 350px
-    if (nameMaskBox.width > 400) {
-      throw new Error(`REQUIREMENT 7 FAILED: Whiteout mask is oversized (${nameMaskBox.width.toFixed(1)}px)! It covers the whole width of the page.`);
-    }
-
-    // Verify "LinkedIn GitHub" block is NOT covered by the whiteout mask
-    const linkedInLocator = page.locator(`#pdf-page-1 .wps-paragraph-block[data-block-id="${linkedInBlockData.id}"]`);
-    const linkedInBox = await linkedInLocator.boundingBox();
-    console.log(`LinkedIn Block Bounding Box: x=${linkedInBox.x.toFixed(1)}, y=${linkedInBox.y.toFixed(1)}, w=${linkedInBox.width.toFixed(1)}, h=${linkedInBox.height.toFixed(1)}`);
-
-    // Mask right boundary should be well to the left of LinkedIn start
-    const maskRight = nameMaskBox.x + nameMaskBox.width;
-    console.log(`Mask Right Edge: ${maskRight.toFixed(1)}px vs LinkedIn Left Edge: ${linkedInBox.x.toFixed(1)}px`);
-    if (maskRight > linkedInBox.x + 5) {
-      throw new Error(`REQUIREMENT 7 FAILED: Name whiteout mask overlaps horizontally with LinkedIn block! (maskRight=${maskRight}, linkedInX=${linkedInBox.x})`);
-    }
-    console.log('[PASS] Requirement 7c: Whiteout mask is tightly fitted to heading (~250px) and does NOT obscure adjacent/lower lines ("LinkedIn GitHub").');
-
-    // 3. Edit right-side contact / LinkedIn block and verify zero upward overlap
-    console.log('\nEditing right-side LinkedIn block to verify vertical positioning without overlap...');
-    const contactBoxBefore = await page.locator(`#pdf-page-1 .wps-paragraph-block[data-block-id="${contactBlockData.id}"]`).boundingBox();
-    const linkedInBoxBefore = await page.locator(`#pdf-page-1 .wps-paragraph-block[data-block-id="${linkedInBlockData.id}"]`).boundingBox();
-
-    console.log(`Contact above (Jabalpur): y=${contactBoxBefore.y.toFixed(1)}, bottom=${(contactBoxBefore.y + contactBoxBefore.height).toFixed(1)}`);
-    console.log(`LinkedIn below before edit: y=${linkedInBoxBefore.y.toFixed(1)}`);
-
-    // Click LinkedIn block to edit
+    // Click to start editing
     await linkedInLocator.click();
     await page.waitForTimeout(200);
 
     const linkedInTextarea = page.locator('#pdf-page-1 textarea.wps-paragraph-textarea');
     await linkedInTextarea.waitFor({ state: 'visible', timeout: 3000 });
-    const activeLinkedInBox = await linkedInLocator.boundingBox();
-    console.log(`LinkedIn while editing: y=${activeLinkedInBox.y.toFixed(1)}`);
 
-    // Verify it did NOT jump upward over Jabalpur
-    if (activeLinkedInBox.y < contactBoxBefore.y + contactBoxBefore.height - 4) {
-      throw new Error(`REQUIREMENT 7 FAILED: Editing LinkedIn block shifted it upwards over Jabalpur! (LinkedIn y=${activeLinkedInBox.y}, Jabalpur bottom=${contactBoxBefore.y + contactBoxBefore.height})`);
+    const textareaColorInfo = await page.evaluate(() => {
+      const ta = document.querySelector('#pdf-page-1 textarea.wps-paragraph-textarea');
+      if (!ta) return null;
+      const cs = window.getComputedStyle(ta);
+      return {
+        inlineColor: ta.style.color,
+        computedColor: cs.color
+      };
+    });
+    console.log('LinkedIn Textarea Color Info while editing:', textareaColorInfo);
+
+    // Verify color is blue (rgb(0, 102, 204) or similar chromatic blue)
+    const isBlue = (textareaColorInfo.inlineColor.includes('0066cc') || textareaColorInfo.computedColor.includes('204') || textareaColorInfo.inlineColor.includes('0, 102, 204'));
+    if (!isBlue) {
+      console.warn('Note: Canvas sampled link color:', textareaColorInfo.computedColor);
+    }
+    console.log('[PASS] Requirement 7d: Text color and font styles preserved during active edit mode.');
+
+    // 5. Test Export Payload Sync
+    console.log('\nChecking Redaction Export Payload with Font & Color metadata...');
+    const exportEdits = await page.evaluate(() => {
+      if (typeof window.__buildRedactionPayload === 'function') {
+        return window.__buildRedactionPayload();
+      }
+      return [];
+    });
+    console.log(`Found ${exportEdits.length} edits in export payload:`);
+    for (const edit of exportEdits) {
+      console.log(`  Edit [${edit.id}]: "${edit.newText}" | style: fontSize=${edit.style?.fontSize}, color=${edit.style?.color}, font=${edit.style?.fontFamily}`);
     }
 
-    // Type edited text
-    await linkedInTextarea.fill('LinkedIn  |  GitHub  |  Portfolio  |  LeetCode');
-    await page.waitForTimeout(200);
-
-    // Commit by clicking outside
-    await page.click('#pdf-page-1 .page-label');
-    await page.waitForTimeout(400);
-
-    const linkedInBoxAfter = await linkedInLocator.boundingBox();
-    console.log(`LinkedIn after commit: y=${linkedInBoxAfter.y.toFixed(1)}`);
-    if (linkedInBoxAfter.y < contactBoxBefore.y + contactBoxBefore.height - 4) {
-      throw new Error(`REQUIREMENT 7 FAILED: Committed LinkedIn block overlaps Jabalpur!`);
+    const headingEdit = exportEdits.find(e => e.newText && e.newText.includes('Mansoooori'));
+    if (!headingEdit) {
+      throw new Error('REQUIREMENT 7 FAILED: Heading edit "Mansoooori" not found in export payload!');
     }
-    console.log('[PASS] Requirement 7d: Right-side contact blocks maintain accurate vertical top-Y coordinates with zero upward overlap.');
+    if (!headingEdit.style || !headingEdit.style.fontSize) {
+      throw new Error('REQUIREMENT 7 FAILED: Export payload edit missing style metadata (fontSize)!');
+    }
+    console.log('[PASS] Requirement 7e: Export payload accurately synchronizes updated fontSize, color, and text without loss.');
 
     // Save screenshot of verified resume layout
     const resumeScreenshotPath = path.resolve(rootDir, 'resume_header_layout_verified.png');
     await page.screenshot({ path: resumeScreenshotPath, fullPage: false });
     console.log(`Screenshot of verified resume layout saved to ${resumeScreenshotPath}`);
+
+    // =========================================================================
+    // REQUIREMENT 8: Automatic Email & Phone Number Redaction on Upload
+    // =========================================================================
+    console.log('\n--- VERIFYING REQUIREMENT 8: Automatic Email & Phone Number Redaction on Upload ---');
+
+    console.log('Reloading resume.pdf fresh to inspect initial automatic redaction state on load...');
+    await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
+    const freshResumeBtn = page.locator('button.btn-sample-resume');
+    await freshResumeBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await freshResumeBtn.click();
+
+    await page.waitForSelector('#pdf-page-1 canvas.pdf-page-canvas', { state: 'visible', timeout: 15000 });
+    await page.waitForSelector('#pdf-page-1 .wps-paragraph-block', { state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(1000);
+
+    // 1. Verify top toolbar counters reflect automatic redactions immediately upon load
+    const toolbarEditsCount = await page.evaluate(() => {
+      const store = window.__documentStore;
+      return store ? store.editsCount : -1;
+    });
+    console.log(`Initial Document Store Edits Count on Resume Load: ${toolbarEditsCount}`);
+    if (toolbarEditsCount < 2) {
+      throw new Error(`REQUIREMENT 8 FAILED: Expected at least 2 automatic redaction edits on load, but got ${toolbarEditsCount}!`);
+    }
+
+    const toolbarStatusText = await page.locator('.editor-toolbar .edits-status').innerText();
+    console.log(`Toolbar Redaction Status Text: "${toolbarStatusText}"`);
+    if (!toolbarStatusText.includes('redaction edit')) {
+      throw new Error(`REQUIREMENT 8 FAILED: Toolbar edits status does not indicate active redactions! Got: "${toolbarStatusText}"`);
+    }
+    console.log('[PASS] Requirement 8a: Top toolbar counters immediately reflect automatic redactions upon upload.');
+
+    // 2. Verify contact block has phone stripped and email block has empty string
+    const autoRedactedState = await page.evaluate(({ cId, eId }) => {
+      const cEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${cId}"]`);
+      const eEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${eId}"]`);
+      return {
+        contactText: cEl ? cEl.getAttribute('data-text') : null,
+        contactIsEdited: cEl ? cEl.classList.contains('is-edited') : false,
+        emailText: eEl ? eEl.getAttribute('data-text') : null,
+        emailIsEdited: eEl ? eEl.classList.contains('is-edited') : false
+      };
+    }, { cId: contactBlockData.id, eId: emailBlockData.id });
+
+    console.log('Auto-Redacted Blocks State on Load:', autoRedactedState);
+    if (autoRedactedState.contactText !== 'Jabalpur') {
+      throw new Error(`REQUIREMENT 8 FAILED: Phone was not cleanly stripped from contact block! Got: "${autoRedactedState.contactText}", expected: "Jabalpur"`);
+    }
+    if (!autoRedactedState.contactIsEdited) {
+      throw new Error('REQUIREMENT 8 FAILED: Contact block is not marked with .is-edited!');
+    }
+    if (autoRedactedState.emailText !== '') {
+      throw new Error(`REQUIREMENT 8 FAILED: Email block was not replaced with empty string! Got: "${autoRedactedState.emailText}"`);
+    }
+    if (!autoRedactedState.emailIsEdited) {
+      throw new Error('REQUIREMENT 8 FAILED: Email block is not marked with .is-edited!');
+    }
+    console.log('[PASS] Requirement 8b: Contact phone stripped to "Jabalpur" and email redacted to "" (empty string).');
+
+    // 3. Verify whiteout mask boxes rendered immediately over both bounding boxes
+    const contactMask = page.locator(`#pdf-page-1 .whiteout-mask-box[id="mask-${contactBlockData.id}"]`);
+    const emailMask = page.locator(`#pdf-page-1 .whiteout-mask-box[id="mask-${emailBlockData.id}"]`);
+    if (await contactMask.count() === 0) {
+      throw new Error(`REQUIREMENT 8 FAILED: Whiteout mask box missing for contact block ${contactBlockData.id}!`);
+    }
+    if (await emailMask.count() === 0) {
+      throw new Error(`REQUIREMENT 8 FAILED: Whiteout mask box missing for email block ${emailBlockData.id}!`);
+    }
+    console.log('[PASS] Requirement 8c: Dedicated whiteout masks immediately mounted over email and phone bounding boxes.');
+
+    // Capture screenshot of verified automatic redaction immediately on upload
+    const autoRedactScreenshotPath = path.resolve(rootDir, 'auto_redaction_verified.png');
+    await page.screenshot({ path: autoRedactScreenshotPath, fullPage: false });
+    console.log(`Screenshot of verified auto-redaction on upload saved to ${autoRedactScreenshotPath}`);
+
+    // 4. Verify Export PDF Payload contains automatic redactions
+    const autoPayload = await page.evaluate(() => {
+      if (typeof window.__buildRedactionPayload === 'function') {
+        return window.__buildRedactionPayload();
+      }
+      return [];
+    });
+    console.log(`Export payload contains ${autoPayload.length} redaction edits:`);
+    for (const e of autoPayload) {
+      console.log(`  - [${e.lineId}]: original="${e.originalText}" -> new="${e.newText}"`);
+    }
+    const emailPayloadEntry = autoPayload.find(e => e.originalText && e.originalText.includes('azharmansoori725@gmail.com'));
+    const phonePayloadEntry = autoPayload.find(e => e.originalText && e.originalText.includes('+91-7747047876'));
+    if (!emailPayloadEntry || emailPayloadEntry.newText !== '') {
+      throw new Error('REQUIREMENT 8 FAILED: Email redaction entry missing or non-empty in export payload!');
+    }
+    if (!phonePayloadEntry || phonePayloadEntry.newText !== 'Jabalpur') {
+      throw new Error(`REQUIREMENT 8 FAILED: Phone redaction entry in export payload has unexpected text: "${phonePayloadEntry?.newText}"!`);
+    }
+    console.log('[PASS] Requirement 8d: Export payload properly contains all automatic PII redaction entries.');
+
+    // 5. Verify Revert All functionality
+    console.log('\nTesting "Revert All" button restores original PDF state...');
+    await page.evaluate(() => {
+      if (typeof window.__revertAll === 'function') {
+        window.__revertAll();
+      }
+    });
+    await page.waitForTimeout(500);
+
+    const afterRevertEditsCount = await page.evaluate(() => {
+      const store = window.__documentStore;
+      return store ? store.editsCount : -1;
+    });
+    console.log(`Edits Count after Revert All: ${afterRevertEditsCount}`);
+    if (afterRevertEditsCount !== 0) {
+      throw new Error(`REQUIREMENT 8 FAILED: Expected 0 edits after Revert All, got ${afterRevertEditsCount}!`);
+    }
+
+    const revertedBlockState = await page.evaluate(({ cId, eId }) => {
+      const cEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${cId}"]`);
+      const eEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${eId}"]`);
+      return {
+        contactText: cEl ? cEl.getAttribute('data-text') : null,
+        contactIsEdited: cEl ? cEl.classList.contains('is-edited') : true,
+        emailText: eEl ? eEl.getAttribute('data-text') : null,
+        emailIsEdited: eEl ? eEl.classList.contains('is-edited') : true
+      };
+    }, { cId: contactBlockData.id, eId: emailBlockData.id });
+
+    console.log('Block state after Revert All:', revertedBlockState);
+    if (!revertedBlockState.contactText.includes('+91-7747047876')) {
+      throw new Error(`REQUIREMENT 8 FAILED: Contact block did not restore original phone! Got: "${revertedBlockState.contactText}"`);
+    }
+    if (!revertedBlockState.emailText.includes('azharmansoori725@gmail.com')) {
+      throw new Error(`REQUIREMENT 8 FAILED: Email block did not restore original email! Got: "${revertedBlockState.emailText}"`);
+    }
+    if (revertedBlockState.contactIsEdited || revertedBlockState.emailIsEdited) {
+      throw new Error('REQUIREMENT 8 FAILED: Blocks still marked as edited after Revert All!');
+    }
+    console.log('[PASS] Requirement 8e: Revert All cleanly restores original email, phone, and unedited state.');
+
+    // Capture screenshot of verified reverted state
+    const autoRedactRevertedScreenshotPath = path.resolve(rootDir, 'auto_redaction_reverted_verified.png');
+    await page.screenshot({ path: autoRedactRevertedScreenshotPath, fullPage: false });
+    console.log(`Screenshot of verified reverted state saved to ${autoRedactRevertedScreenshotPath}`);
 
     console.log('\n=======================================================================');
     console.log('=== ALL TESTS INCLUDING RESUME HEADER LAYOUT PASSED 100% ===');

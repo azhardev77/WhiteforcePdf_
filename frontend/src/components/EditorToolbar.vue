@@ -127,7 +127,7 @@ const props = defineProps({
   }
 });
 
-defineEmits(['export']);
+const emit = defineEmits(['export', 'revert-all']);
 
 const documentStore = useDocumentStore();
 
@@ -160,6 +160,7 @@ function fitZoom() {
 
 function clearAllEdits() {
   if (window.confirm('Revert all text changes back to original PDF?')) {
+    emit('revert-all');
     documentStore.edits = [];
     documentStore.activeBlockId = null;
   }

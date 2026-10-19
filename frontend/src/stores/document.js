@@ -13,7 +13,9 @@ export const useDocumentStore = defineStore('document', {
     isExtracting: false,
     isExporting: false,
     errorMessage: null,
-    fileName: ''
+    fileName: '',
+    restoredSession: null,
+    isRestoredSession: false
   }),
 
   getters: {
@@ -166,6 +168,14 @@ export const useDocumentStore = defineStore('document', {
     },
 
     /**
+     * Clears all recorded edits and active block selection.
+     */
+    clearAllEdits() {
+      this.edits = [];
+      this.activeBlockId = null;
+    },
+
+    /**
      * Retrieves an existing edit for a given element ID.
      */
     getEdit(id) {
@@ -221,6 +231,38 @@ export const useDocumentStore = defineStore('document', {
     },
 
     /**
+     * Restores state from an IndexedDB saved session.
+     *
+     * @param {Object} session - Session record from IndexedDB
+     */
+    restoreSession(session) {
+      if (!session || !session.pdfBytes) return;
+      this.isExtracting = false;
+      this.errorMessage = null;
+      this.fileName = session.fileName || 'document.pdf';
+
+      let buffer = session.pdfBytes;
+      if (buffer instanceof Uint8Array) {
+        buffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+      } else if (buffer instanceof ArrayBuffer) {
+        buffer = buffer.slice(0);
+      }
+
+      this.originalPdfData = buffer;
+      this.originalFile = new Blob([buffer.slice(0)], { type: 'application/pdf' });
+      this.documentModel = session.documentModel || {
+        name: session.fileName || 'document.pdf',
+        pages: [{ pageNumber: 1, width: 595.28, height: 841.89 }]
+      };
+      if (session.viewSettings?.zoom) {
+        this.zoom = Math.min(Math.max(session.viewSettings.zoom, 0.5), 3.0);
+      }
+      this.edits = Array.isArray(session.edits) ? [...session.edits] : [];
+      this.restoredSession = session;
+      this.isRestoredSession = true;
+    },
+
+    /**
      * Resets document state back to empty.
      */
     resetDocument() {
@@ -233,6 +275,8 @@ export const useDocumentStore = defineStore('document', {
       this.errorMessage = null;
       this.isExtracting = false;
       this.isExporting = false;
+      this.restoredSession = null;
+      this.isRestoredSession = false;
     }
   }
 });

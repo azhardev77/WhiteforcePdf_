@@ -530,6 +530,8 @@ const fs = require('fs');
         return {
           id: el.getAttribute('data-block-id') || '',
           text: (el.getAttribute('data-text') || el.innerText || '').trim(),
+          originalText: (el.getAttribute('data-original-text') || '').trim(),
+          isEdited: el.classList.contains('is-edited'),
           fontSize: parseFloat(el.getAttribute('data-font-size')) || parseFloat(cs.fontSize),
           fontFamily: cs.fontFamily,
           rect: {
@@ -546,14 +548,14 @@ const fs = require('fs');
 
     console.log(`Found ${resumeBlocks.length} paragraph blocks on Resume Page 1:`);
     for (const b of resumeBlocks) {
-      console.log(`  [${b.id}] "${b.text.slice(0, 40)}" (fontSize: ${b.fontSize}px, rect: x=${b.rect.left.toFixed(1)}, y=${b.rect.top.toFixed(1)}, w=${b.rect.width.toFixed(1)}, h=${b.rect.height.toFixed(1)})`);
+      console.log(`  [${b.id}] text="${b.text.slice(0, 40)}" | orig="${b.originalText.slice(0, 40)}" | isEdited=${b.isEdited} (fontSize: ${b.fontSize}px)`);
     }
 
     // 1. Verify 4 Independent Blocks on Resume Page 1
-    const nameBlockData = resumeBlocks.find(b => b.text.includes('Mohd Azhar Mansoori'));
-    const contactBlockData = resumeBlocks.find(b => b.text.includes('Jabalpur') || b.text.includes('+91-7747047876'));
+    const nameBlockData = resumeBlocks.find(b => b.text.includes('Mohd Azhar Mansoori') || (b.originalText && b.originalText.includes('Mohd Azhar Mansoori')));
+    const contactBlockData = resumeBlocks.find(b => b.text.includes('Jabalpur') || (b.originalText && b.originalText.includes('Jabalpur')));
     const linkedInBlockData = resumeBlocks.find(b => b.text.includes('LinkedIn') || b.text.includes('GitHub'));
-    const emailBlockData = resumeBlocks.find(b => b.text.includes('azharmansoori725@gmail.com'));
+    const emailBlockData = resumeBlocks.find(b => b.text.includes('azharmansoori725@gmail.com') || (b.originalText && b.originalText.includes('azharmansoori725@gmail.com')));
 
     if (!nameBlockData) {
       throw new Error('REQUIREMENT 7 FAILED: Heading block "Mohd Azhar Mansoori" not found!');
@@ -713,6 +715,148 @@ const fs = require('fs');
     const resumeScreenshotPath = path.resolve(rootDir, 'resume_header_layout_verified.png');
     await page.screenshot({ path: resumeScreenshotPath, fullPage: false });
     console.log(`Screenshot of verified resume layout saved to ${resumeScreenshotPath}`);
+
+    // =========================================================================
+    // REQUIREMENT 8: Automatic Email & Phone Number Redaction on Upload
+    // =========================================================================
+    console.log('\n--- VERIFYING REQUIREMENT 8: Automatic Email & Phone Number Redaction on Upload ---');
+
+    console.log('Reloading resume.pdf fresh to inspect initial automatic redaction state on load...');
+    await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
+    const freshResumeBtn = page.locator('button.btn-sample-resume');
+    await freshResumeBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await freshResumeBtn.click();
+
+    await page.waitForSelector('#pdf-page-1 canvas.pdf-page-canvas', { state: 'visible', timeout: 15000 });
+    await page.waitForSelector('#pdf-page-1 .wps-paragraph-block', { state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(1000);
+
+    // 1. Verify top toolbar counters reflect automatic redactions immediately upon load
+    const toolbarEditsCount = await page.evaluate(() => {
+      const store = window.__documentStore;
+      return store ? store.editsCount : -1;
+    });
+    console.log(`Initial Document Store Edits Count on Resume Load: ${toolbarEditsCount}`);
+    if (toolbarEditsCount < 2) {
+      throw new Error(`REQUIREMENT 8 FAILED: Expected at least 2 automatic redaction edits on load, but got ${toolbarEditsCount}!`);
+    }
+
+    const toolbarStatusText = await page.locator('.editor-toolbar .edits-status').innerText();
+    console.log(`Toolbar Redaction Status Text: "${toolbarStatusText}"`);
+    if (!toolbarStatusText.includes('redaction edit')) {
+      throw new Error(`REQUIREMENT 8 FAILED: Toolbar edits status does not indicate active redactions! Got: "${toolbarStatusText}"`);
+    }
+    console.log('[PASS] Requirement 8a: Top toolbar counters immediately reflect automatic redactions upon upload.');
+
+    // 2. Verify contact block has phone stripped and email block has empty string
+    const autoRedactedState = await page.evaluate(({ cId, eId }) => {
+      const cEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${cId}"]`);
+      const eEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${eId}"]`);
+      return {
+        contactText: cEl ? cEl.getAttribute('data-text') : null,
+        contactIsEdited: cEl ? cEl.classList.contains('is-edited') : false,
+        emailText: eEl ? eEl.getAttribute('data-text') : null,
+        emailIsEdited: eEl ? eEl.classList.contains('is-edited') : false
+      };
+    }, { cId: contactBlockData.id, eId: emailBlockData.id });
+
+    console.log('Auto-Redacted Blocks State on Load:', autoRedactedState);
+    if (autoRedactedState.contactText !== 'Jabalpur') {
+      throw new Error(`REQUIREMENT 8 FAILED: Phone was not cleanly stripped from contact block! Got: "${autoRedactedState.contactText}", expected: "Jabalpur"`);
+    }
+    if (!autoRedactedState.contactIsEdited) {
+      throw new Error('REQUIREMENT 8 FAILED: Contact block is not marked with .is-edited!');
+    }
+    if (autoRedactedState.emailText !== '') {
+      throw new Error(`REQUIREMENT 8 FAILED: Email block was not replaced with empty string! Got: "${autoRedactedState.emailText}"`);
+    }
+    if (!autoRedactedState.emailIsEdited) {
+      throw new Error('REQUIREMENT 8 FAILED: Email block is not marked with .is-edited!');
+    }
+    console.log('[PASS] Requirement 8b: Contact phone stripped to "Jabalpur" and email redacted to "" (empty string).');
+
+    // 3. Verify whiteout mask boxes rendered immediately over both bounding boxes
+    const contactMask = page.locator(`#pdf-page-1 .whiteout-mask-box[id="mask-${contactBlockData.id}"]`);
+    const emailMask = page.locator(`#pdf-page-1 .whiteout-mask-box[id="mask-${emailBlockData.id}"]`);
+    if (await contactMask.count() === 0) {
+      throw new Error(`REQUIREMENT 8 FAILED: Whiteout mask box missing for contact block ${contactBlockData.id}!`);
+    }
+    if (await emailMask.count() === 0) {
+      throw new Error(`REQUIREMENT 8 FAILED: Whiteout mask box missing for email block ${emailBlockData.id}!`);
+    }
+    console.log('[PASS] Requirement 8c: Dedicated whiteout masks immediately mounted over email and phone bounding boxes.');
+
+    // Capture screenshot of verified automatic redaction immediately on upload
+    const autoRedactScreenshotPath = path.resolve(rootDir, 'auto_redaction_verified.png');
+    await page.screenshot({ path: autoRedactScreenshotPath, fullPage: false });
+    console.log(`Screenshot of verified auto-redaction on upload saved to ${autoRedactScreenshotPath}`);
+
+    // 4. Verify Export PDF Payload contains automatic redactions
+    const autoPayload = await page.evaluate(() => {
+      if (typeof window.__buildRedactionPayload === 'function') {
+        return window.__buildRedactionPayload();
+      }
+      return [];
+    });
+    console.log(`Export payload contains ${autoPayload.length} redaction edits:`);
+    for (const e of autoPayload) {
+      console.log(`  - [${e.lineId}]: original="${e.originalText}" -> new="${e.newText}"`);
+    }
+    const emailPayloadEntry = autoPayload.find(e => e.originalText && e.originalText.includes('azharmansoori725@gmail.com'));
+    const phonePayloadEntry = autoPayload.find(e => e.originalText && e.originalText.includes('+91-7747047876'));
+    if (!emailPayloadEntry || emailPayloadEntry.newText !== '') {
+      throw new Error('REQUIREMENT 8 FAILED: Email redaction entry missing or non-empty in export payload!');
+    }
+    if (!phonePayloadEntry || phonePayloadEntry.newText !== 'Jabalpur') {
+      throw new Error(`REQUIREMENT 8 FAILED: Phone redaction entry in export payload has unexpected text: "${phonePayloadEntry?.newText}"!`);
+    }
+    console.log('[PASS] Requirement 8d: Export payload properly contains all automatic PII redaction entries.');
+
+    // 5. Verify Revert All functionality
+    console.log('\nTesting "Revert All" button restores original PDF state...');
+    await page.evaluate(() => {
+      if (typeof window.__revertAll === 'function') {
+        window.__revertAll();
+      }
+    });
+    await page.waitForTimeout(500);
+
+    const afterRevertEditsCount = await page.evaluate(() => {
+      const store = window.__documentStore;
+      return store ? store.editsCount : -1;
+    });
+    console.log(`Edits Count after Revert All: ${afterRevertEditsCount}`);
+    if (afterRevertEditsCount !== 0) {
+      throw new Error(`REQUIREMENT 8 FAILED: Expected 0 edits after Revert All, got ${afterRevertEditsCount}!`);
+    }
+
+    const revertedBlockState = await page.evaluate(({ cId, eId }) => {
+      const cEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${cId}"]`);
+      const eEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${eId}"]`);
+      return {
+        contactText: cEl ? cEl.getAttribute('data-text') : null,
+        contactIsEdited: cEl ? cEl.classList.contains('is-edited') : true,
+        emailText: eEl ? eEl.getAttribute('data-text') : null,
+        emailIsEdited: eEl ? eEl.classList.contains('is-edited') : true
+      };
+    }, { cId: contactBlockData.id, eId: emailBlockData.id });
+
+    console.log('Block state after Revert All:', revertedBlockState);
+    if (!revertedBlockState.contactText.includes('+91-7747047876')) {
+      throw new Error(`REQUIREMENT 8 FAILED: Contact block did not restore original phone! Got: "${revertedBlockState.contactText}"`);
+    }
+    if (!revertedBlockState.emailText.includes('azharmansoori725@gmail.com')) {
+      throw new Error(`REQUIREMENT 8 FAILED: Email block did not restore original email! Got: "${revertedBlockState.emailText}"`);
+    }
+    if (revertedBlockState.contactIsEdited || revertedBlockState.emailIsEdited) {
+      throw new Error('REQUIREMENT 8 FAILED: Blocks still marked as edited after Revert All!');
+    }
+    console.log('[PASS] Requirement 8e: Revert All cleanly restores original email, phone, and unedited state.');
+
+    // Capture screenshot of verified reverted state
+    const autoRedactRevertedScreenshotPath = path.resolve(rootDir, 'auto_redaction_reverted_verified.png');
+    await page.screenshot({ path: autoRedactRevertedScreenshotPath, fullPage: false });
+    console.log(`Screenshot of verified reverted state saved to ${autoRedactRevertedScreenshotPath}`);
 
     console.log('\n=======================================================================');
     console.log('=== ALL TESTS INCLUDING RESUME HEADER LAYOUT PASSED 100% ===');
