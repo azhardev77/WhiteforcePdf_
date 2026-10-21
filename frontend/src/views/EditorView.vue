@@ -345,6 +345,10 @@ async function triggerOpenNewFile() {
         multiple: false
       });
       if (handle) {
+        // Completely purge previous editor canvas overlays and state
+        if (canvasEditorRef.value?.purgeEditorState) {
+          canvasEditorRef.value.purgeEditorState();
+        }
         const file = await handle.getFile();
         documentStore.fileHandle = handle;
         await documentStore.uploadAndExtract(file);
@@ -372,7 +376,10 @@ async function handleLogoClick() {
 
 async function handleCloseDocument() {
   if (window.confirm('Close current document and return to upload screen?')) {
-    await sessionStorageService.clearSession();
+    if (canvasEditorRef.value?.purgeEditorState) {
+      canvasEditorRef.value.purgeEditorState();
+    }
+    await sessionStorageService.clearDraftCache();
     documentStore.resetDocument();
   }
 }
@@ -395,6 +402,9 @@ async function handleFileDrop(event) {
   if (files && files.length > 0) {
     const file = files[0];
     if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+      if (canvasEditorRef.value?.purgeEditorState) {
+        canvasEditorRef.value.purgeEditorState();
+      }
       await uploadFile(file);
     } else {
       documentStore.errorMessage = 'Please upload a valid PDF document (.pdf).';
@@ -405,12 +415,21 @@ async function handleFileDrop(event) {
 async function handleFileInput(event) {
   const files = event.target?.files;
   if (files && files.length > 0) {
+    if (canvasEditorRef.value?.purgeEditorState) {
+      canvasEditorRef.value.purgeEditorState();
+    }
     await uploadFile(files[0]);
+  }
+  if (event.target) {
+    event.target.value = '';
   }
 }
 
 async function uploadFile(file) {
   try {
+    if (canvasEditorRef.value?.purgeEditorState) {
+      canvasEditorRef.value.purgeEditorState();
+    }
     await documentStore.uploadAndExtract(file);
   } catch {
     // Error is set in store
@@ -419,6 +438,9 @@ async function uploadFile(file) {
 
 async function loadSampleDocument() {
   try {
+    if (canvasEditorRef.value?.purgeEditorState) {
+      canvasEditorRef.value.purgeEditorState();
+    }
     await documentStore.loadSample('sample.pdf');
   } catch {
     // Error is set in store
@@ -427,6 +449,9 @@ async function loadSampleDocument() {
 
 async function loadResumeDocument() {
   try {
+    if (canvasEditorRef.value?.purgeEditorState) {
+      canvasEditorRef.value.purgeEditorState();
+    }
     await documentStore.loadSample('resume.pdf');
   } catch {
     // Error is set in store

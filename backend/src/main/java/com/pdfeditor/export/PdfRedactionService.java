@@ -12,14 +12,25 @@ import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.graphics.image.LosslessFactory;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.rendering.PDFRenderer;
+import org.apache.pdfbox.contentstream.operator.Operator;
+import org.apache.pdfbox.cos.COSBase;
+import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.cos.COSNumber;
+import org.apache.pdfbox.pdfparser.PDFStreamParser;
+import org.apache.pdfbox.pdfwriter.ContentStreamWriter;
+import org.apache.pdfbox.pdmodel.common.PDStream;
+import org.apache.pdfbox.util.Matrix;
 import org.springframework.stereotype.Service;
 
 import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,6 +74,10 @@ public class PdfRedactionService {
                 float pageH = cropBox.getHeight();
 
                 List<TextRedactionEdit> pageEdits = entry.getValue();
+
+                // Strip original text tokens (Tj, TJ, ', ") inside the redaction boxes from the content stream
+                // so that hidden underlying text cannot be extracted or merged on re-opening.
+                stripTextTokensInRedactionBoxes(doc, page, pageEdits, originX, originY, pageW, pageH);
 
                 // Edits ko top-to-bottom (Y coordinate ke hisaab se) sort karein taaki shift
                 // sahi kaam kare
@@ -448,5 +463,211 @@ public class PdfRedactionService {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * Strips text-showing tokens (Tj, TJ, ', ") whose coordinates fall within any of the target
+     * redaction edit bounding boxes. This prevents PDF.js and PDFBox extractors from detecting
+     * underlying obsolete text operators beneath whiteout rectangles.
+     */
+    private void stripTextTokensInRedactionBoxes(PDDocument doc, PDPage page, List<TextRedactionEdit> edits,
+                                                float originX, float originY, float pageW, float pageH) {
+        if (edits == null || edits.isEmpty() || !page.hasContents()) {
+            return;
+        }
+
+        try {
+            PDFStreamParser parser = new PDFStreamParser(page);
+            List<Object> tokens = parser.parse();
+            parser.close();
+
+            if (tokens == null || tokens.isEmpty()) {
+                return;
+            }
+
+            List<Object> newTokens = new ArrayList<>(tokens.size());
+            List<Object> currentOperands = new ArrayList<>();
+
+            Deque<Matrix> ctmStack = new ArrayDeque<>();
+            Matrix ctm = new Matrix();
+            Matrix textMatrix = null;
+            Matrix textLineMatrix = null;
+            float textLeading = 0.0f;
+            boolean modified = false;
+
+            for (Object token : tokens) {
+                if (token instanceof Operator) {
+                    Operator op = (Operator) token;
+                    String opName = op.getName();
+
+                    boolean isTextShowing = "Tj".equals(opName) || "TJ".equals(opName)
+                            || "'".equals(opName) || "\"".equals(opName);
+
+                    if (isTextShowing) {
+                        Matrix trm = (textMatrix != null ? textMatrix : new Matrix()).multiply(ctm);
+                        float posX = trm.getTranslateX();
+                        float posY = trm.getTranslateY();
+
+                        if (isInsideAnyEditBox(posX, posY, edits, originX, originY, pageW, pageH)) {
+                            // Stripping this text token!
+                            currentOperands.clear();
+                            modified = true;
+                            // For ' and ", update text line matrix even if stripped because they advance line
+                            if (("'".equals(opName) || "\"".equals(opName)) && textLineMatrix != null) {
+                                textLineMatrix.concatenate(new Matrix(1, 0, 0, 1, 0, -textLeading));
+                                textMatrix = textLineMatrix.clone();
+                            }
+                            continue;
+                        }
+
+                        // For ' and ", update text line matrix if kept
+                        if (("'".equals(opName) || "\"".equals(opName)) && textLineMatrix != null) {
+                            textLineMatrix.concatenate(new Matrix(1, 0, 0, 1, 0, -textLeading));
+                            textMatrix = textLineMatrix.clone();
+                        }
+                    } else if ("cm".equals(opName)) {
+                        if (currentOperands.size() >= 6) {
+                            float a = getFloatOperand(currentOperands.get(0));
+                            float b = getFloatOperand(currentOperands.get(1));
+                            float c = getFloatOperand(currentOperands.get(2));
+                            float d = getFloatOperand(currentOperands.get(3));
+                            float e = getFloatOperand(currentOperands.get(4));
+                            float f = getFloatOperand(currentOperands.get(5));
+                            ctm.concatenate(new Matrix(a, b, c, d, e, f));
+                        }
+                    } else if ("q".equals(opName)) {
+                        ctmStack.push(ctm.clone());
+                    } else if ("Q".equals(opName)) {
+                        ctm = ctmStack.isEmpty() ? new Matrix() : ctmStack.pop();
+                    } else if ("BT".equals(opName)) {
+                        textMatrix = new Matrix();
+                        textLineMatrix = new Matrix();
+                    } else if ("ET".equals(opName)) {
+                        textMatrix = null;
+                        textLineMatrix = null;
+                    } else if ("Tm".equals(opName)) {
+                        if (currentOperands.size() >= 6) {
+                            float a = getFloatOperand(currentOperands.get(0));
+                            float b = getFloatOperand(currentOperands.get(1));
+                            float c = getFloatOperand(currentOperands.get(2));
+                            float d = getFloatOperand(currentOperands.get(3));
+                            float e = getFloatOperand(currentOperands.get(4));
+                            float f = getFloatOperand(currentOperands.get(5));
+                            textMatrix = new Matrix(a, b, c, d, e, f);
+                            textLineMatrix = textMatrix.clone();
+                        }
+                    } else if ("Td".equals(opName)) {
+                        if (currentOperands.size() >= 2 && textLineMatrix != null) {
+                            float tx = getFloatOperand(currentOperands.get(0));
+                            float ty = getFloatOperand(currentOperands.get(1));
+                            textLineMatrix.concatenate(new Matrix(1, 0, 0, 1, tx, ty));
+                            textMatrix = textLineMatrix.clone();
+                        }
+                    } else if ("TD".equals(opName)) {
+                        if (currentOperands.size() >= 2 && textLineMatrix != null) {
+                            float tx = getFloatOperand(currentOperands.get(0));
+                            float ty = getFloatOperand(currentOperands.get(1));
+                            textLeading = -ty;
+                            textLineMatrix.concatenate(new Matrix(1, 0, 0, 1, tx, ty));
+                            textMatrix = textLineMatrix.clone();
+                        }
+                    } else if ("T*".equals(opName)) {
+                        if (textLineMatrix != null) {
+                            textLineMatrix.concatenate(new Matrix(1, 0, 0, 1, 0, -textLeading));
+                            textMatrix = textLineMatrix.clone();
+                        }
+                    } else if ("TL".equals(opName)) {
+                        if (!currentOperands.isEmpty()) {
+                            textLeading = getFloatOperand(currentOperands.get(0));
+                        }
+                    }
+
+                    newTokens.addAll(currentOperands);
+                    newTokens.add(op);
+                    currentOperands.clear();
+                } else {
+                    currentOperands.add(token);
+                }
+            }
+
+            if (!currentOperands.isEmpty()) {
+                newTokens.addAll(currentOperands);
+                currentOperands.clear();
+            }
+
+            if (modified) {
+                PDStream newStream = new PDStream(doc);
+                try (OutputStream out = newStream.createOutputStream(COSName.FLATE_DECODE)) {
+                    ContentStreamWriter writer = new ContentStreamWriter(out);
+                    writer.writeTokens(newTokens);
+                }
+                page.setContents(newStream);
+            }
+        } catch (Exception e) {
+            System.err.println("[PdfRedactionService] Warning: Failed to strip text tokens: " + e.getMessage());
+        }
+    }
+
+    private boolean isInsideAnyEditBox(float posX, float posY, List<TextRedactionEdit> edits,
+                                       float originX, float originY, float pageW, float pageH) {
+        float tol = 4.0f;
+        for (TextRedactionEdit edit : edits) {
+            if (edit == null) continue;
+
+            // 1. Check whiteoutBoxes if present
+            if (edit.getWhiteoutBoxes() != null && !edit.getWhiteoutBoxes().isEmpty()) {
+                for (double[] wbox : edit.getWhiteoutBoxes()) {
+                    if (checkSingleBox(posX, posY, wbox, edit.getPageRotation(), originX, originY, pageW, pageH, tol)) {
+                        return true;
+                    }
+                }
+            }
+
+            // 2. Check originalBbox / originalBoundingBox if present
+            double[] origBbox = edit.getOriginalBbox() != null ? edit.getOriginalBbox() : edit.getOriginalBoundingBox();
+            if (origBbox != null && origBbox.length >= 4) {
+                if (checkSingleBox(posX, posY, origBbox, edit.getPageRotation(), originX, originY, pageW, pageH, tol)) {
+                    return true;
+                }
+            }
+
+            // 3. Check edit.getBbox()
+            if (edit.getBbox() != null && edit.getBbox().length >= 4) {
+                if (checkSingleBox(posX, posY, edit.getBbox(), edit.getPageRotation(), originX, originY, pageW, pageH, tol)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean checkSingleBox(float posX, float posY, double[] box, int pageRotation,
+                                   float originX, float originY, float pageW, float pageH, float tol) {
+        if (box == null || box.length < 4) return false;
+        double[] pdfBbox = toUnrotatedPdfCoords(box, pageRotation, pageW, pageH);
+        float boxX = (float) pdfBbox[0];
+        float boxY = (float) pdfBbox[1]; // distance from page top
+        float boxW = (float) pdfBbox[2];
+        float boxH = (float) pdfBbox[3];
+
+        float minUserX = originX + boxX;
+        float maxUserX = originX + boxX + boxW;
+        float minUserY = originY + (pageH - boxY - boxH);
+        float maxUserY = originY + (pageH - boxY);
+
+        float lowX = Math.min(minUserX, maxUserX);
+        float highX = Math.max(minUserX, maxUserX);
+        float lowY = Math.min(minUserY, maxUserY);
+        float highY = Math.max(minUserY, maxUserY);
+
+        return (posX >= (lowX - tol)) && (posX <= (highX + tol))
+                && (posY >= (lowY - tol)) && (posY <= (highY + tol));
+    }
+
+    private float getFloatOperand(Object obj) {
+        if (obj instanceof COSNumber) {
+            return ((COSNumber) obj).floatValue();
+        }
+        return 0.0f;
     }
 }

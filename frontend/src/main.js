@@ -10,4 +10,8 @@ const pinia = createPinia();
 app.use(pinia);
 app.use(router);
 
+if (typeof window !== 'undefined') {
+  window.__pinia = pinia;
+}
+
 app.mount('#app');

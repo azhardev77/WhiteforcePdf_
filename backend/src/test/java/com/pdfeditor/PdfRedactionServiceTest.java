@@ -84,6 +84,7 @@ class PdfRedactionServiceTest {
             String extractedText = stripper.getText(doc);
 
             assertThat(extractedText).contains("CORRIGENDUM TO RFQ M19282");
+            assertThat(extractedText).doesNotContain("Tender Enquiry M19282");
         }
     }
 

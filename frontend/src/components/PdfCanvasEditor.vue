@@ -1,7 +1,14 @@
 <template>
-  <div class="pdf-canvas-editor-container" ref="containerRef">
+  <div
+    class="pdf-canvas-editor-container"
+    ref="containerRef"
+    @mousedown="onBackgroundMouseDown"
+  >
     <!-- Pages Scroller -->
-    <div class="pages-wrapper">
+    <div
+      class="pages-wrapper"
+      @mousedown="onBackgroundMouseDown"
+    >
       <div
         v-for="pageIndex in numPages"
         :key="pageIndex"
@@ -9,6 +16,7 @@
         :data-page="pageIndex"
         class="pdf-page-card"
         :style="getPageCardStyle(pageIndex)"
+        @mousedown="onBackgroundMouseDown"
       >
         <!-- Page Header Label & Orientation Controls -->
         <div class="page-meta-header">
@@ -54,6 +62,7 @@
         <div
           class="page-stage"
           :style="getPageStageStyle(pageIndex)"
+          @mousedown="onBackgroundMouseDown"
         >
           <!-- Active Page: Mounted when visible in/near viewport -->
           <template v-if="isPageVisible(pageIndex)">
@@ -84,6 +93,7 @@
               v-if="isPageCanvasRendered[pageIndex]"
               class="pdf-page-overlay"
               :style="getPageOverlayStyle(pageIndex)"
+              @mousedown="onBackgroundMouseDown"
             >
               <div
                 v-for="block in getPageBlocks(pageIndex)"
@@ -109,7 +119,7 @@
                 :style="getParagraphBlockStyle(block)"
                 @mouseenter="hoveredBlockId = block.id"
                 @mouseleave="hoveredBlockId = null"
-                @pointerdown="onBlockPointerDown(block, $event)"
+                @mousedown.stop="onBlockMouseDown(block, $event)"
                 @click.stop="onParagraphClick(block, $event)"
               >
                 <!-- Floating Formatting Mini-Toolbar on Active / Editing Block -->
@@ -231,6 +241,8 @@
                     @input="onParagraphInput(block, $event)"
                     @keydown.esc.prevent="cancelBlockEdit(block)"
                     @blur="onParagraphBlur(block)"
+                    @mousedown.stop
+                    @click.stop
                   />
                 </template>
 
@@ -251,6 +263,7 @@
                       class="btn-revert-block btn-revert-item"
                       title="Revert paragraph to original text (1 click)"
                       @click.stop="revertBlock(block)"
+                      @mousedown.stop
                     >
                       &times;
                     </button>
@@ -367,6 +380,7 @@ function saveCurrentSession() {
     const currentEdits = buildRedactionPayload();
     const rawPdf = toRaw(documentStore.originalPdfData);
     const sessionData = {
+      fileKey: documentStore.fileKey,
       pdfBytes: rawPdf,
       fileName: documentStore.fileName || 'document.pdf',
       documentModel: toRaw(documentStore.documentModel),
@@ -416,7 +430,8 @@ function isBlockEdited(block) {
                          (block.customWidth != null) ||
                          (block.bold !== block.originalBold) ||
                          (block.italic !== block.originalItalic);
-  return Boolean(block.isEdited && (block.text !== block.originalText || hasStyleChange));
+  const hasTextChanged = (block.text || '').trim() !== (block.originalText || '').trim();
+  return Boolean(block.isEdited && (hasTextChanged || hasStyleChange));
 }
 
 function getPageEditCount(pageIndex) {
@@ -763,7 +778,7 @@ function startResizeBlock(block, event) {
 function isContactOrListLine(text) {
   if (!text) return false;
   const t = text.trim();
-  if (t.startsWith('•') || t.startsWith('-') || t.startsWith('*') || /^(\d+[\.\)]|\([a-zA-Z0-9]+\))\s+/.test(t)) {
+  if (/^[•●○◦▪▫‣⁃∙·→\-\*]/.test(t) || /^(\d+[\.\)]|\([a-zA-Z0-9]+\))\s+/.test(t)) {
     return true;
   }
   const lower = t.toLowerCase();
@@ -892,6 +907,14 @@ function applyLiveCanvasReflow(pageNumber) {
       pristine.width, Math.round(remainingH * dpr)
     );
   }
+
+  // Paint whiteout on canvas for any active or edited blocks on this page
+  const pageBlocks = pageBlocksMap.value[pageNumber] || [];
+  for (const b of pageBlocks) {
+    if (editingBlockId.value === b.id || isBlockEdited(b) || Boolean(editedBlocksState[b.id])) {
+      paintBlockOnCanvas(b, '#ffffff', 3);
+    }
+  }
 }
 
 /**
@@ -948,17 +971,113 @@ function getLeftExpandedBlockBox(block, pageBlocks) {
   };
 }
 
+/**
+ * Helper to get all bounding rects for a block (supports multi-line paragraph blocks).
+ */
+function getBlockRects(block) {
+  if (block.lines && block.lines.length > 1) {
+    return block.lines.map(line => ({
+      x: line.originalX != null ? line.originalX : line.x,
+      y: line.originalY != null ? line.originalY : line.y,
+      width: line.originalWidth != null ? line.originalWidth : line.width,
+      height: line.originalHeight != null ? line.originalHeight : line.height
+    }));
+  }
+  return [{
+    x: block.originalX != null ? block.originalX : block.x,
+    y: block.originalY != null ? block.originalY : block.y,
+    width: block.originalWidth != null ? block.originalWidth : block.width,
+    height: block.originalHeight != null ? block.originalHeight : block.height
+  }];
+}
+
+/**
+ * Paints a solid whiteout box with bleed padding directly onto the underlying PDF.js canvas,
+ * erasing any underlying text, descenders, link underlines, or anti-aliasing edges.
+ */
+function paintBlockOnCanvas(block, color = '#ffffff', bleed = 3) {
+  if (!block) return;
+  const pageNumber = block.pageNumber;
+  const canvas = canvasRefs.value[pageNumber];
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+
+  const rects = getBlockRects(block);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = color;
+
+  for (const rect of rects) {
+    const rx = Math.max(0, Math.floor((rect.x - bleed) * dpr));
+    const ry = Math.max(0, Math.floor((rect.y - bleed) * dpr));
+    const rw = Math.ceil((rect.width + (bleed * 2)) * dpr);
+    const rh = Math.ceil((rect.height + (bleed * 2)) * dpr);
+    ctx.fillRect(rx, ry, rw, rh);
+  }
+  ctx.restore();
+}
+
+/**
+ * Restores the original canvas region for a block from the pristine canvas snapshot,
+ * reverting any whiteout paint when an edit is cancelled or blurred without change.
+ */
+function restoreBlockOnCanvas(block, bleed = 4) {
+  if (!block) return;
+  const pageNumber = block.pageNumber;
+  const canvas = canvasRefs.value[pageNumber];
+  const pristine = pristineCanvasMap[pageNumber];
+  if (!canvas || !pristine) return;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+
+  const expanded = getPageExpandedEdits(pageNumber);
+  if (expanded.length > 0) {
+    applyLiveCanvasReflow(pageNumber);
+  } else {
+    const rects = getBlockRects(block);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    for (const rect of rects) {
+      const rx = Math.max(0, Math.floor((rect.x - bleed) * dpr));
+      const ry = Math.max(0, Math.floor((rect.y - bleed) * dpr));
+      const rw = Math.min(canvas.width - rx, Math.ceil((rect.width + (bleed * 2)) * dpr));
+      const rh = Math.min(canvas.height - ry, Math.ceil((rect.height + (bleed * 2)) * dpr));
+      if (rw > 0 && rh > 0) {
+        ctx.drawImage(pristine, rx, ry, rw, rh, rx, ry, rw, rh);
+      }
+    }
+    ctx.restore();
+  }
+
+  // Ensure any other active or edited blocks on this page retain their whiteout paint
+  const pageBlocks = pageBlocksMap.value[pageNumber] || [];
+  for (const otherBlock of pageBlocks) {
+    if (otherBlock.id !== block.id && (isBlockEdited(otherBlock) || editingBlockId.value === otherBlock.id || Boolean(editedBlocksState[otherBlock.id]))) {
+      paintBlockOnCanvas(otherBlock, '#ffffff', 3);
+    }
+  }
+}
+
 function getPageWhiteoutMasks(pageIndex) {
   const blocks = pageBlocksMap.value[pageIndex] || [];
   if (blocks.length === 0) return [];
 
   const masks = [];
+  const pad = 3; // 3px bleed padding (x - 3, y - 3, width + 6, height + 6) to 100% cover underlines and descenders
+
   for (const block of blocks) {
     const isEditing = editingBlockId.value === block.id;
-    const isEdited = isBlockEdited(block) || isEditing;
+    const isEdited = isBlockEdited(block) || isEditing || Boolean(editedBlocksState[block.id]);
     if (!isEdited) continue;
-    // CRITICAL: Blank line blocks with transparent background MUST NOT whiteout the line!
-    if (block.isBlankLine || block.transparentBackground) {
+
+    // Blank lines: when not actively editing, do not mask line unless edited with text
+    if (block.isBlankLine && !isEditing && !isBlockEdited(block)) {
       continue;
     }
 
@@ -971,33 +1090,44 @@ function getPageWhiteoutMasks(pageIndex) {
       masks.push({
         id: `mask-${block.id}`,
         style: {
-          left: `${Math.round(exp.x)}px`,
-          top: `${Math.round(exp.y)}px`,
-          width: `${Math.round(exp.width + 1)}px`,
-          height: `${Math.round(exp.height + 1)}px`
+          left: `${Math.round(exp.x - pad)}px`,
+          top: `${Math.round(exp.y - pad)}px`,
+          width: `${Math.round(exp.width + (pad * 2))}px`,
+          height: `${Math.round(exp.height + (pad * 2))}px`,
+          backgroundColor: '#ffffff'
         }
       });
     } else if (block.lines && block.lines.length > 1) {
       for (let lIdx = 0; lIdx < block.lines.length; lIdx++) {
         const line = block.lines[lIdx];
+        const lx = line.originalX != null ? line.originalX : line.x;
+        const ly = line.originalY != null ? line.originalY : line.y;
+        const lw = line.originalWidth != null ? line.originalWidth : line.width;
+        const lh = line.originalHeight != null ? line.originalHeight : line.height;
         masks.push({
           id: lIdx === 0 ? `mask-${block.id}` : `mask-${block.id}-l${lIdx}`,
           style: {
-            left: `${Math.round(line.originalX || line.x)}px`,
-            top: `${Math.round(line.originalY || line.y)}px`,
-            width: `${Math.round((line.originalWidth || line.width) + 1)}px`,
-            height: `${Math.round((line.originalHeight || line.height) + 1)}px`
+            left: `${Math.round(lx - pad)}px`,
+            top: `${Math.round(ly - pad)}px`,
+            width: `${Math.round(lw + (pad * 2))}px`,
+            height: `${Math.round(lh + (pad * 2))}px`,
+            backgroundColor: '#ffffff'
           }
         });
       }
     } else {
+      const bx = block.originalX != null ? block.originalX : block.x;
+      const by = block.originalY != null ? block.originalY : block.y;
+      const bw = block.originalWidth != null ? block.originalWidth : block.width;
+      const bh = block.originalHeight != null ? block.originalHeight : block.height;
       masks.push({
         id: `mask-${block.id}`,
         style: {
-          left: `${Math.round(block.originalX)}px`,
-          top: `${Math.round(block.originalY)}px`,
-          width: `${Math.round(block.originalWidth + 1)}px`,
-          height: `${Math.round(block.originalHeight + 1)}px`
+          left: `${Math.round(bx - pad)}px`,
+          top: `${Math.round(by - pad)}px`,
+          width: `${Math.round(bw + (pad * 2))}px`,
+          height: `${Math.round(bh + (pad * 2))}px`,
+          backgroundColor: '#ffffff'
         }
       });
     }
@@ -1009,7 +1139,7 @@ function getParagraphBlockStyle(block) {
   const _ = reflowVersion.value;
   const maxW = getMaxAvailableWidth(block);
   const isEditing = editingBlockId.value === block.id;
-  const isEdited = isBlockEdited(block);
+  const isEdited = isBlockEdited(block) || Boolean(editedBlocksState[block.id]);
   const heightPx = (isEditing || isEdited)
     ? Math.max((isEditing ? (activeDeltaY.value + block.originalHeight) : block.currentHeight) || block.originalHeight, block.originalHeight)
     : block.originalHeight;
@@ -1029,6 +1159,15 @@ function getParagraphBlockStyle(block) {
   const posX = block.customX != null ? block.customX : block.originalX;
   const posY = block.customY != null ? block.customY : block.y;
 
+  let zIndexVal = 15;
+  if (isEditing) {
+    zIndexVal = 50;
+  } else if (isEdited) {
+    zIndexVal = 25;
+  } else if (block.isBlankLine) {
+    zIndexVal = 10;
+  }
+
   const styleObj = {
     left: `${Math.round(posX)}px`,
     top: `${Math.round(posY)}px`,
@@ -1040,11 +1179,19 @@ function getParagraphBlockStyle(block) {
     fontWeight: block.bold ? 'bold' : 'normal',
     fontStyle: block.italic ? 'italic' : 'normal',
     color: getBlockColorHex(block),
-    zIndex: isEditing ? 35 : (isEdited ? 25 : 15)
+    zIndex: zIndexVal,
+    pointerEvents: 'auto'
   };
 
   if (block.isBlankLine || block.transparentBackground) {
     styleObj.backgroundColor = 'transparent';
+  } else if (isEditing) {
+    styleObj.backgroundColor = '#ffffff';
+    styleObj.opacity = '1';
+    styleObj.zIndex = 50;
+  } else if (isEdited) {
+    styleObj.backgroundColor = '#ffffff';
+    styleObj.opacity = '1';
   }
 
   return styleObj;
@@ -1060,7 +1207,10 @@ function getParagraphTextareaStyle(block) {
     fontWeight: block.bold ? 'bold' : 'normal',
     fontStyle: block.italic ? 'italic' : 'normal',
     color: getBlockColorHex(block),
-    lineHeight: `${Math.round(linePitch)}px`
+    lineHeight: `${Math.round(linePitch)}px`,
+    backgroundColor: '#ffffff',
+    opacity: '1',
+    zIndex: 50
   };
 }
 
@@ -1136,15 +1286,61 @@ function findDotRange(text) {
 
 const draggingBlockId = ref(null);
 
-function onBlockPointerDown(block, event) {
-  if (event.target === event.currentTarget) {
-    startDragBlock(block, event);
+function onBlockMouseDown(block, event) {
+  if (event.button !== 0) return; // Only primary mouse button
+
+  // If clicked inside floating toolbar, drag handle, resize handle, or revert button, let them handle it
+  if (
+    event.target.closest('.block-floating-toolbar') ||
+    event.target.closest('.block-drag-handle') ||
+    event.target.closest('.block-resize-handle') ||
+    event.target.closest('.btn-revert-block')
+  ) {
+    return;
   }
+
+  // Prevent Re-Selection Loop:
+  // If this block is ALREADY in edit mode, do NOT re-trigger startEditingBlock or selectAll!
+  // Allow the browser to natively position the cursor where the user clicked.
+  if (editingBlockId.value === block.id) {
+    return;
+  }
+
+  // Fix Block Switching:
+  // If another block is currently being edited, commit it immediately on mousedown
+  // so its blur timer does not race or swallow the upcoming click!
+  if (editingBlockId.value && editingBlockId.value !== block.id) {
+    commitActiveBlock();
+  }
+}
+
+function onBackgroundMouseDown(event) {
+  if (!editingBlockId.value) return;
+  const target = event.target;
+  if (!target) return;
+
+  // Don't commit if clicking inside active editing block or its controls
+  if (
+    target.closest('.block-floating-toolbar') ||
+    target.closest('.block-drag-handle') ||
+    target.closest('.block-resize-handle') ||
+    target.closest('.wps-paragraph-textarea') ||
+    target.closest('.wps-paragraph-block.is-editing')
+  ) {
+    return;
+  }
+
+  // If clicking on another block, let onBlockMouseDown handle the switch
+  if (target.closest('.wps-paragraph-block')) {
+    return;
+  }
+
+  commitActiveBlock();
 }
 
 function startDragBlock(block, event) {
   if (event.button !== 0) return; // Only primary mouse button
-  if (editingBlockId.value === block.id) {
+  if (editingBlockId.value) {
     commitActiveBlock();
   }
 
@@ -1223,8 +1419,11 @@ function startDragBlock(block, event) {
 }
 
 function onParagraphClick(block, event) {
-  if (draggingBlockId.value) return;
   if (editingBlockId.value === block.id) return;
+  if (draggingBlockId.value) return;
+  if (editingBlockId.value && editingBlockId.value !== block.id) {
+    commitActiveBlock();
+  }
   startEditingBlock(block, event);
 }
 
@@ -1240,6 +1439,11 @@ function startEditingBlock(block, event) {
   }
 
   editingBlockId.value = block.id;
+  // Rule 1: Solid #FFFFFF paint with 3px bleed padding on underlying canvas for regular text blocks
+  if (!block.isBlankLine && !block.transparentBackground) {
+    paintBlockOnCanvas(block, '#ffffff', 3);
+  }
+
   if (block.isBlankLine) {
     const raw = block.text != null ? block.text : block.originalText;
     activeBlockText.value = (/^[,\.;:\-_–—\s]*$/.test(raw || '')) ? '' : raw;
@@ -1349,6 +1553,16 @@ function commitActiveBlock() {
     targetBlock.text = activeBlockText.value != null ? activeBlockText.value : '';
     targetBlock.deltaY = activeDeltaY.value || 0;
 
+    const hasStyleOrPosChanged = Boolean(
+      targetBlock.isMoved ||
+      targetBlock.customFontSize != null ||
+      targetBlock.customColor != null ||
+      targetBlock.customWidth != null ||
+      targetBlock.bold !== targetBlock.originalBold ||
+      targetBlock.italic !== targetBlock.originalItalic
+    );
+    const hasTextChanged = (targetBlock.text || '').trim() !== (targetBlock.originalText || '').trim();
+
     if (targetBlock.isBlankLine) {
       if (targetBlock.text && targetBlock.text.trim()) {
         targetBlock.isEdited = true;
@@ -1369,7 +1583,7 @@ function commitActiveBlock() {
         targetBlock.deltaY = 0;
         targetBlock.currentHeight = targetBlock.originalHeight;
       }
-    } else if (targetBlock.text !== targetBlock.originalText || targetBlock.isMoved || targetBlock.customFontSize || targetBlock.customColor || targetBlock.customWidth || targetBlock.bold !== targetBlock.originalBold || targetBlock.italic !== targetBlock.originalItalic) {
+    } else if (hasTextChanged || hasStyleOrPosChanged) {
       targetBlock.isEdited = true;
       editedBlocksState[targetBlock.id] = {
         newText: targetBlock.text,
@@ -1384,11 +1598,16 @@ function commitActiveBlock() {
         italic: targetBlock.italic,
         isMoved: targetBlock.isMoved
       };
+      // Keep solid whiteout painted on canvas
+      paintBlockOnCanvas(targetBlock, '#ffffff', 3);
     } else {
+      // No-op edit: unchanged text and style -> revert block, clear state, restore pristine canvas
+      targetBlock.text = targetBlock.originalText;
       targetBlock.isEdited = false;
       delete editedBlocksState[targetBlock.id];
       targetBlock.deltaY = 0;
       targetBlock.currentHeight = targetBlock.originalHeight;
+      restoreBlockOnCanvas(targetBlock, 4);
     }
     updatePageVerticalReflow(targetBlock.pageNumber);
   }
@@ -1409,8 +1628,14 @@ function cancelBlockEdit(block) {
   }
 
   if (editingBlockId.value === block.id) {
+    const wasAlreadyEdited = Boolean(editedBlocksState[block.id]);
     activeBlockText.value = block.text;
     editingBlockId.value = null;
+
+    // Rule 3: Restore pristine canvas region on edit cancel
+    if (!wasAlreadyEdited) {
+      restoreBlockOnCanvas(block, 4);
+    }
   }
 }
 
@@ -1453,6 +1678,9 @@ function revertBlock(block) {
     activeDeltaY.value = 0;
   }
 
+  // Restore pristine canvas region
+  restoreBlockOnCanvas(block, 4);
+
   updatePageVerticalReflow(block.pageNumber);
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
@@ -1491,6 +1719,27 @@ function revertAll() {
     }
     updatePageVerticalReflow(Number(pageNumStr));
   }
+
+  // Restore all pages to pristine canvases and original viewport dimensions
+  for (const p in pristineCanvasMap) {
+    const canvas = canvasRefs.value[p];
+    const pristine = pristineCanvasMap[p];
+    if (canvas && pristine) {
+      const vp = pageViewports.value[p];
+      if (canvas.height !== pristine.height || canvas.width !== pristine.width) {
+        canvas.width = pristine.width;
+        canvas.height = pristine.height;
+        if (vp) {
+          canvas.style.width = `${Math.floor(vp.width)}px`;
+          canvas.style.height = `${Math.floor(vp.height)}px`;
+        }
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(pristine, 0, 0);
+    }
+  }
+  autoRedactedBlockIds.clear();
   editingBlockId.value = null;
   activeBlockText.value = '';
   activeDeltaY.value = 0;
@@ -1519,7 +1768,9 @@ function buildRedactionPayload() {
       if (!isEdited) continue;
 
       const currentText = isActivelyEditing ? activeBlockText.value : block.text;
-      if (currentText === block.originalText && !isActivelyEditing && !isMoved && !block.customFontSize && !block.customColor) continue;
+      const hasTextDiff = (currentText || '').trim() !== (block.originalText || '').trim();
+      const hasStyleDiff = Boolean(isMoved || block.customFontSize || block.customColor || block.customWidth || block.bold !== block.originalBold || block.italic !== block.originalItalic);
+      if (!hasTextDiff && !hasStyleDiff) continue;
 
       const isFullyRedacted = (!currentText || currentText.trim().length === 0);
       const isPiiBlock = hasPII(block.originalText) || autoRedactedBlockIds.has(block.id);
@@ -1883,6 +2134,14 @@ async function renderPage(pageNumber) {
     scanAndAppendCanvasBlankLines(pageNumber, pristineClone, viewport);
     updatePageVerticalReflow(pageNumber);
 
+    // Paint whiteout on canvas for any already edited or actively editing blocks on this page
+    const pBlocks = pageBlocksMap.value[pageNumber] || [];
+    for (const b of pBlocks) {
+      if (editingBlockId.value === b.id || isBlockEdited(b) || Boolean(editedBlocksState[b.id])) {
+        paintBlockOnCanvas(b, '#ffffff', 3);
+      }
+    }
+
     isPageCanvasRendered.value[pageNumber] = true;
     emit('page-rendered', pageNumber);
   } catch (err) {
@@ -1890,6 +2149,25 @@ async function renderPage(pageNumber) {
       console.error(`Error rendering page ${pageNumber}:`, err);
     }
   }
+}
+
+function areColorsMatching(c1, c2) {
+  if (c1 === c2) return true;
+  if (!c1 || !c2) return true;
+  const parseHex = (hex) => {
+    const clean = (hex || '').replace('#', '');
+    if (clean.length === 6) {
+      return [parseInt(clean.slice(0, 2), 16), parseInt(clean.slice(2, 4), 16), parseInt(clean.slice(4, 6), 16)];
+    }
+    return [0, 0, 0];
+  };
+  const [r1, g1, b1] = parseHex(c1);
+  const [r2, g2, b2] = parseHex(c2);
+  const isDark1 = (r1 < 70 && g1 < 70 && b1 < 70);
+  const isDark2 = (r2 < 70 && g2 < 70 && b2 < 70);
+  if (isDark1 && isDark2) return true;
+  const dist = Math.hypot(r1 - r2, g1 - g2, b1 - b2);
+  return dist < 35;
 }
 
 /**
@@ -1940,8 +2218,92 @@ function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanva
     });
   }
 
+  // Deduplicate overlapping / shadowed text items (e.g. from previous whiteout saves)
+  // If duplicate items share exact coordinates (Math.abs(itemA.x - itemB.x) < 2 && Math.abs(itemA.y - itemB.y) < 2),
+  // retain only the latest/topmost stream item (higher itemIndex) and discard underlying shadowed items.
+  const shadowedIndices = new Set();
+  const coordTol = 2.0;
+
+  for (let i = 0; i < rawItems.length; i++) {
+    for (let j = i + 1; j < rawItems.length; j++) {
+      const itemA = rawItems[i];
+      const itemB = rawItems[j];
+
+      const dx = Math.abs(itemA.x - itemB.x);
+      const dy = Math.abs(itemA.y - itemB.y);
+      const dBaseY = Math.abs(itemA.baselineY - itemB.baselineY);
+      const pdfDx = Math.abs(itemA.pdfX - itemB.pdfX);
+      const pdfDy = Math.abs(itemA.pdfY - itemB.pdfY);
+
+      // Exact coordinate overlap in viewport px or PDF pts
+      const isExactCoordOverlap = (pdfDx < coordTol && pdfDy < coordTol) ||
+                                  (dx < coordTol * viewport.scale && dy < coordTol * viewport.scale) ||
+                                  (dx < coordTol * viewport.scale && dBaseY < coordTol * viewport.scale) ||
+                                  (dx < coordTol && dy < coordTol);
+
+      // Horizontal baseline containment: if a later stream item covers/replaces an earlier item on the same baseline
+      const isSameBaseline = dBaseY < (3.5 * viewport.scale) || pdfDy < 3.5;
+      const bCoversA = isSameBaseline &&
+                       (itemB.itemIndex > itemA.itemIndex) &&
+                       ((Math.abs(itemA.x - itemB.x) < 4.0 * viewport.scale) ||
+                        (itemA.x >= itemB.x - (coordTol * viewport.scale) &&
+                         (itemA.x + itemA.width) <= (itemB.x + itemB.width + (coordTol * viewport.scale))) ||
+                        (Math.max(itemA.x, itemB.x) < Math.min(itemA.x + itemA.width, itemB.x + itemB.width) - (2.0 * viewport.scale)));
+
+      const aCoversB = isSameBaseline &&
+                       (itemA.itemIndex > itemB.itemIndex) &&
+                       ((Math.abs(itemB.x - itemA.x) < 4.0 * viewport.scale) ||
+                        (itemB.x >= itemA.x - (coordTol * viewport.scale) &&
+                         (itemB.x + itemB.width) <= (itemA.x + itemA.width + (coordTol * viewport.scale))) ||
+                        (Math.max(itemA.x, itemB.x) < Math.min(itemA.x + itemA.width, itemB.x + itemB.width) - (2.0 * viewport.scale)));
+
+      if (isExactCoordOverlap || bCoversA || aCoversB) {
+        if (itemA.itemIndex < itemB.itemIndex) {
+          shadowedIndices.add(i);
+        } else {
+          shadowedIndices.add(j);
+        }
+      }
+    }
+  }
+
+  // Propagation pass for short-text replacements:
+  // If an older stream token was shadowed by a newer stream token, any contiguous older tokens
+  // on that same baseline (following with normal word spacing < 35px) were part of the replaced line
+  // and must also be shadowed so they never reappear after short-text edits.
+  let newlyShadowed = true;
+  while (newlyShadowed) {
+    newlyShadowed = false;
+    for (let i = 0; i < rawItems.length; i++) {
+      if (shadowedIndices.has(i)) continue;
+      const itemCand = rawItems[i];
+
+      for (const shadowedIdx of Array.from(shadowedIndices)) {
+        const itemShad = rawItems[shadowedIdx];
+        if (itemCand.itemIndex >= itemShad.itemIndex) continue; // Must be an older item
+
+        const dBaseY = Math.abs(itemCand.baselineY - itemShad.baselineY);
+        const isSameBaseline = dBaseY < (3.5 * viewport.scale);
+        if (!isSameBaseline) continue;
+
+        // Is itemCand directly adjacent/contiguous to itemShad on the right?
+        const gap = itemCand.x - (itemShad.x + itemShad.width);
+        const maxWordGap = Math.min(Math.max(itemShad.viewportFontSize * 2.2, 28 * viewport.scale), 35 * viewport.scale);
+        if (gap >= -2.0 && gap <= maxWordGap) {
+          shadowedIndices.add(i);
+          newlyShadowed = true;
+          break;
+        }
+      }
+    }
+  }
+
+  const cleanRawItems = shadowedIndices.size > 0
+    ? rawItems.filter((_, idx) => !shadowedIndices.has(idx))
+    : rawItems;
+
   // 1. Group items on the same baseline into Rows
-  rawItems.sort((a, b) => {
+  cleanRawItems.sort((a, b) => {
     const diffBaseY = a.baselineY - b.baselineY;
     const tol = Math.min(Math.min(a.viewportFontSize, b.viewportFontSize) * 0.35, 3.0 * viewport.scale);
     if (Math.abs(diffBaseY) > tol) return diffBaseY;
@@ -1949,7 +2311,7 @@ function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanva
   });
 
   const rows = [];
-  for (const item of rawItems) {
+  for (const item of cleanRawItems) {
     let matchedRow = null;
     const tol = Math.min(item.viewportFontSize * 0.35, 3.0 * viewport.scale);
     for (const row of rows) {
@@ -1980,6 +2342,24 @@ function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanva
       const prevItem = row.items[i - 1];
       const currItem = row.items[i];
       const gap = currItem.x - (prevItem.x + prevItem.width);
+
+      // Coordinate overlap safeguard inside the same row:
+      // If two items start at virtually identical X (Math.abs(currItem.x - prevItem.x) < 2),
+      // or if currItem substantially overlaps with prevItem (negative gap),
+      // retain only the newer/topmost stream item and discard the shadowed item.
+      const isCoordOverlap = Math.abs(currItem.x - prevItem.x) < Math.max(2.0, 2.0 * viewport.scale) ||
+                             Math.abs(currItem.pdfX - prevItem.pdfX) < 2.0;
+      const isNegativeOverlap = currItem.x < (prevItem.x + prevItem.width - Math.max(2.0, 2.0 * viewport.scale));
+
+      if (isCoordOverlap || isNegativeOverlap) {
+        if (currItem.itemIndex > prevItem.itemIndex) {
+          // currItem is newer: replace prevItem in currentLineItems
+          currentLineItems.pop();
+          currentLineItems.push(currItem);
+        }
+        // If prevItem was newer, keep prevItem and discard currItem
+        continue;
+      }
 
       // Fix 1: Horizontal Gap Check
       // Standard inter-word space in fonts is 0.25 - 0.40 * fontSize (typically 3-8px).
@@ -2109,33 +2489,14 @@ function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanva
       isProseWidth = (currentBlock.originalWidth >= 200 * viewport.scale) && (line.width >= 200 * viewport.scale);
     }
 
-function areColorsMatching(c1, c2) {
-  if (c1 === c2) return true;
-  if (!c1 || !c2) return true;
-  const parseHex = (hex) => {
-    const clean = (hex || '').replace('#', '');
-    if (clean.length === 6) {
-      return [parseInt(clean.slice(0, 2), 16), parseInt(clean.slice(2, 4), 16), parseInt(clean.slice(4, 6), 16)];
-    }
-    return [0, 0, 0];
-  };
-  const [r1, g1, b1] = parseHex(c1);
-  const [r2, g2, b2] = parseHex(c2);
-  const isDark1 = (r1 < 70 && g1 < 70 && b1 < 70);
-  const isDark2 = (r2 < 70 && g2 < 70 && b2 < 70);
-  if (isDark1 && isDark2) return true;
-  const dist = Math.hypot(r1 - r2, g1 - g2, b1 - b2);
-  return dist < 35;
-}
-
-// Fix 3: Color Matching Check
+    // Fix 3: Color Matching Check
     const colorMatches = areColorsMatching(line.color, currentBlock.color);
 
     // Disjoint column check: If line is completely to the right or left of currentBlock
     const isHorizontallyDisjoint = (line.x >= currentBlock.x + currentBlock.width + 10 * viewport.scale) ||
                                    (currentBlock.x >= line.x + line.width + 10 * viewport.scale);
 
-    const isNumberedList = /^(\d+[\.\)]|\([a-zA-Z0-9]+\)|[•\-\*])\s+/.test(line.text.trim());
+    const isNumberedList = /^(\d+[\.\)]|\([a-zA-Z0-9]+\)|[•●○◦▪▫‣⁃∙·→\-\*])\s*/.test(line.text.trim());
     const isHeaderChange = (currentBlock.lines.length === 1 && currentBlock.bold !== line.bold);
     const isBlockUppercase = currentBlock.lines.length === 1 &&
                              currentBlock.text.trim().length > 6 &&
@@ -2198,7 +2559,7 @@ function areColorsMatching(c1, c2) {
     blocks.push(currentBlock);
   }
 
-  // 4. Restore any existing edits for this page, or apply automatic PII redaction
+  // 4. Restore any existing edits for this page (if restored from explicit saved session)
   for (const block of blocks) {
     if (editedBlocksState[block.id]) {
       const state = editedBlocksState[block.id];
@@ -2226,57 +2587,6 @@ function areColorsMatching(c1, c2) {
         block.customY = state.customY;
         block.x = state.customX;
         block.y = state.customY;
-      }
-    } else if (!autoRedactedBlockIds.has(block.id) && !isRestored) {
-      autoRedactedBlockIds.add(block.id);
-      if (!block.isBlankLine && hasPII(block.text)) {
-        const cleanedText = redactPIIFromText(block.text);
-        if (cleanedText !== block.text) {
-          block.text = cleanedText;
-          block.isEdited = true;
-          editedBlocksState[block.id] = {
-            newText: cleanedText,
-            deltaY: 0,
-            currentHeight: block.currentHeight || block.originalHeight
-          };
-        }
-      }
-    }
-  }
-
-  // 5. Scan for tiny sibling icon boxes immediately to the left of redacted PII blocks
-  if (!isRestored) {
-    for (const piiBox of blocks) {
-      if (!piiBox.isEdited || piiBox.isBlankLine) continue;
-      const isPiiRedacted = hasPII(piiBox.originalText) || (piiBox.text === '' && autoRedactedBlockIds.has(piiBox.id));
-      if (!isPiiRedacted) continue;
-
-      for (const sibling of blocks) {
-        if (sibling.id === piiBox.id || sibling.isBlankLine) continue;
-        const sibW = sibling.originalWidth || sibling.width;
-        const isTiny = sibW < (25 * viewport.scale);
-        if (!isTiny) continue;
-
-        const sameBaseline = Math.abs(sibling.y - piiBox.y) < (6 * viewport.scale);
-        if (!sameBaseline) continue;
-
-        const sibRight = sibling.x + sibW;
-        const gap = piiBox.x - sibRight;
-        const isImmediatelyLeft = sibling.x < piiBox.x && gap >= -2 && gap < (18 * viewport.scale);
-        if (!isImmediatelyLeft) continue;
-
-        const textTrim = (sibling.text || '').trim();
-        const isIconGlyph = textTrim.length <= 2 || !/[a-zA-Z0-9]/.test(textTrim) || /^[\u2600-\u27BF\uE000-\uF8FF\uD83C-\uDBFF\uDC00-\uDFFF✉☎✆📞📧📱📍\s]+$/.test(textTrim);
-        if (isIconGlyph) {
-          sibling.text = '';
-          sibling.isEdited = true;
-          autoRedactedBlockIds.add(sibling.id);
-          editedBlocksState[sibling.id] = {
-            newText: '',
-            deltaY: 0,
-            currentHeight: sibling.originalHeight
-          };
-        }
       }
     }
   }
@@ -2555,6 +2865,69 @@ function createBlockFromLine(line, pageNumber, blockIndex) {
   };
 }
 
+/**
+ * Completely purges all previous editor state, in-flight render tasks,
+ * canvas snapshots, active edits, and overlays before rendering a new PDF canvas.
+ */
+function purgeEditorState() {
+  // 1. Reset active editing selection
+  editingBlockId.value = null;
+  activeBlockText.value = '';
+  hoveredBlockId.value = null;
+  activeDeltaY.value = 0;
+  reflowVersion.value = 0;
+
+  // 2. Clear all debounce and blur timers
+  if (sessionSaveDebounceTimer) {
+    clearTimeout(sessionSaveDebounceTimer);
+    sessionSaveDebounceTimer = null;
+  }
+  if (renderDebounceTimer) {
+    clearTimeout(renderDebounceTimer);
+    renderDebounceTimer = null;
+  }
+  if (blurTimer) {
+    clearTimeout(blurTimer);
+    blurTimer = null;
+  }
+
+  // 3. Cancel any in-flight PDF.js page rendering tasks
+  for (const p in renderTasks) {
+    try {
+      renderTasks[p].cancel();
+    } catch {}
+    delete renderTasks[p];
+  }
+
+  // 4. Clear pristine canvas caches
+  for (const p in pristineCanvasMap) {
+    delete pristineCanvasMap[p];
+  }
+
+  // 5. Clear tracked edit states and auto-redacted blocks
+  for (const k of Object.keys(editedBlocksState)) {
+    delete editedBlocksState[k];
+  }
+  autoRedactedBlockIds.clear();
+
+  // 6. Reset page blocks, viewports, rotations, and rendering tracking
+  pageBlocksMap.value = {};
+  pageViewports.value = {};
+  userRotations.value = {};
+  isPageCanvasRendered.value = {};
+  visiblePages.value = {};
+  canvasRefs.value = {};
+  numPages.value = 0;
+
+  // 7. Cleanup active PDF.js document handle
+  if (currentPdfDoc) {
+    try {
+      currentPdfDoc.destroy();
+    } catch {}
+    currentPdfDoc = null;
+  }
+}
+
 // Watchers
 watch(
   () => documentStore.originalPdfData,
@@ -2563,7 +2936,10 @@ watch(
       if (documentStore.isCommittedSave) {
         return;
       }
-      const isRestored = Boolean(documentStore.restoredSession);
+      // Completely purge previous canvas state, edit tracking, and overlays before rendering new canvas
+      purgeEditorState();
+
+      const isRestored = Boolean(documentStore.isRestoredSession && documentStore.restoredSession);
       if (isRestored) {
         const restored = documentStore.restoredSession;
         if (restored.viewSettings?.userRotations) {
@@ -2577,18 +2953,9 @@ watch(
         }
         if (restored.pageBlocksMap && Object.keys(restored.pageBlocksMap).length > 0) {
           pageBlocksMap.value = { ...restored.pageBlocksMap };
-        } else {
-          pageBlocksMap.value = {};
         }
-      } else {
-        userRotations.value = {};
-        for (const k of Object.keys(editedBlocksState)) {
-          delete editedBlocksState[k];
-        }
-        autoRedactedBlockIds.clear();
-        pageBlocksMap.value = {};
       }
-      isPageCanvasRendered.value = {};
+
       await renderAllPages(isRestored);
     }
   },
@@ -2639,10 +3006,15 @@ onMounted(async () => {
     window.__documentStore = documentStore;
     window.__saveCurrentSession = saveCurrentSession;
     window.__sessionStorageService = sessionStorageService;
+    window.__purgeEditorState = purgeEditorState;
+    window.addEventListener('mousedown', onBackgroundMouseDown);
   }
 });
 
 onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('mousedown', onBackgroundMouseDown);
+  }
   if (pageObserver) {
     pageObserver.disconnect();
     pageObserver = null;
@@ -2728,6 +3100,7 @@ defineExpose({
   revertAll,
   commitActiveBlock,
   commitSavedBaseline,
+  purgeEditorState,
   getUserRotations: () => ({ ...userRotations.value })
 });
 </script>
@@ -2870,7 +3243,7 @@ defineExpose({
   cursor: text;
   border-radius: 2px;
   overflow: visible;
-  pointer-events: auto;
+  pointer-events: auto !important;
   user-select: text;
   border: 1px dashed #64748b;
   transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
@@ -2883,9 +3256,10 @@ defineExpose({
 
 .wps-paragraph-block.is-editing {
   border: 1.5px solid #2563eb;
-  background-color: #ffffff;
+  background-color: #ffffff !important;
+  opacity: 1 !important;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
-  z-index: 35 !important;
+  z-index: 50 !important;
 }
 
 .wps-paragraph-block.is-edited {
@@ -2955,12 +3329,18 @@ defineExpose({
 }
 
 .wps-paragraph-block.is-blank-line,
-.wps-paragraph-block.is-blank-line.is-editing,
-.wps-paragraph-block.is-blank-line.is-edited,
-.wps-paragraph-block.transparent-bg,
-.wps-paragraph-block.transparent-bg.is-editing,
-.wps-paragraph-block.transparent-bg.is-edited {
+.wps-paragraph-block.transparent-bg {
   background-color: transparent !important;
+}
+
+.wps-paragraph-block.is-blank-line:not(.is-editing):not(.is-edited),
+.wps-paragraph-block.transparent-bg:not(.is-editing):not(.is-edited) {
+  z-index: 10 !important;
+}
+
+.wps-paragraph-block.is-editing.is-blank-line,
+.wps-paragraph-block.is-editing.transparent-bg {
+  z-index: 50 !important;
 }
 
 .wps-paragraph-block.is-active {
@@ -2976,7 +3356,9 @@ defineExpose({
   margin: 0;
   border: none;
   outline: none;
-  background: transparent;
+  background-color: #ffffff !important;
+  opacity: 1 !important;
+  z-index: 50 !important;
   resize: none;
   overflow: hidden;
   white-space: pre-wrap;

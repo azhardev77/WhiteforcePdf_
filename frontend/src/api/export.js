@@ -34,14 +34,14 @@ export async function exportPdf(documentModel, downloadFilename) {
 }
 
 /**
- * Sends original PDF and text redaction edits to PDFBox in-place redaction endpoint and triggers download.
+ * Requests modified PDF bytes from PDFBox backend in-place redaction endpoint without triggering download.
  *
  * @param {Blob|File} fileOrBlob - Original PDF binary data
  * @param {Array<Object>} edits - List of TextRedactionEdit objects
- * @param {string} [downloadFilename] - Download filename
+ * @param {string} [downloadFilename] - Document filename
  * @returns {Promise<Blob>} The modified PDF blob
  */
-export async function exportRedactedPdf(fileOrBlob, edits, downloadFilename) {
+export async function requestRedactedPdf(fileOrBlob, edits, downloadFilename) {
   const formData = new FormData();
   const resolvedFileName = downloadFilename || 'edited_document.pdf';
   formData.append('file', fileOrBlob, resolvedFileName);
@@ -54,7 +54,20 @@ export async function exportRedactedPdf(fileOrBlob, edits, downloadFilename) {
     }
   });
 
-  const blob = response.data;
+  return response.data;
+}
+
+/**
+ * Sends original PDF and text redaction edits to PDFBox in-place redaction endpoint and triggers download.
+ *
+ * @param {Blob|File} fileOrBlob - Original PDF binary data
+ * @param {Array<Object>} edits - List of TextRedactionEdit objects
+ * @param {string} [downloadFilename] - Download filename
+ * @returns {Promise<Blob>} The modified PDF blob
+ */
+export async function exportRedactedPdf(fileOrBlob, edits, downloadFilename) {
+  const blob = await requestRedactedPdf(fileOrBlob, edits, downloadFilename);
+  const resolvedFileName = downloadFilename || 'edited_document.pdf';
   const finalFilename = resolvedFileName.toLowerCase().endsWith('.pdf') ? resolvedFileName : `${resolvedFileName}.pdf`;
 
   const blobUrl = window.URL.createObjectURL(blob);

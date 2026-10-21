@@ -3,7 +3,7 @@ import { extractPdfClient } from '@/services/clientPdfExtractor';
 import { exportModifiedPdf, triggerBrowserDownload } from '@/services/pdfLibExportService';
 import sessionStorageService from '@/services/sessionStorageService';
 import { extractPdf, extractSample, fetchRawSamplePdf } from '@/api/documents';
-import { exportPdf, exportRedactedPdf, exportHtml } from '@/api/export';
+import { exportPdf, exportRedactedPdf, requestRedactedPdf, exportHtml } from '@/api/export';
 
 export const useDocumentStore = defineStore('document', {
   state: () => ({
@@ -11,6 +11,7 @@ export const useDocumentStore = defineStore('document', {
     originalPdfData: null, // ArrayBuffer or Uint8Array
     originalFile: null,    // File or Blob
     fileHandle: null,      // FileSystemFileHandle when opened via File System Access API
+    fileKey: null,         // Unique document hash/identifier for scoped storage
     edits: [],             // Array of TextRedactionEdit
     activeBlockId: null,
     zoom: 1.25,
@@ -47,40 +48,75 @@ export const useDocumentStore = defineStore('document', {
 
   actions: {
     /**
-     * Uploads a user PDF, stores raw binary in state, and extracts layout client-side.
+     * Completely purges all document-related states, edit arrays, and session markers.
+     */
+    purgeDocumentState() {
+      this.documentModel = null;
+      this.originalPdfData = null;
+      this.originalFile = null;
+      this.fileHandle = null;
+      this.fileKey = null;
+      this.edits = [];
+      this.activeBlockId = null;
+      this.fileName = '';
+      this.errorMessage = null;
+      this.isExtracting = false;
+      this.isExporting = false;
+      this.isSaving = false;
+      this.isCommittedSave = false;
+      this.lastSavedTime = null;
+      this.restoredSession = null;
+      this.isRestoredSession = false;
+      this.zoom = 1.25;
+    },
+
+    /**
+     * Uploads a user PDF, purges previous state, stores raw binary, and extracts layout client-side.
      *
      * @param {File} file - PDF file to upload
      * @returns {Promise<Object>} Extracted DocumentModel
      */
     async uploadAndExtract(file) {
       if (!file) return null;
+
+      // 1. Completely purge any previous document state before new load
+      this.purgeDocumentState();
       this.isExtracting = true;
-      this.errorMessage = null;
       this.fileName = file.name;
-      this.edits = [];
-      this.activeBlockId = null;
-      this.restoredSession = null;
-      this.isRestoredSession = false;
+
+      // 2. Clear any active draft cache in storage so previous edits never leak
+      try {
+        await sessionStorageService.clearDraftCache();
+      } catch (cacheErr) {
+        console.warn('[documentStore] clearDraftCache warning:', cacheErr);
+      }
 
       try {
         const arrayBuffer = await file.arrayBuffer();
-        this.originalPdfData = arrayBuffer;
-        this.originalFile = file;
+        const fileKey = await sessionStorageService.computeFileHash(arrayBuffer, {
+          fileName: file.name,
+          fileSize: file.size,
+          lastModified: file.lastModified
+        });
 
         // 100% Client-Side Extraction via pdfjs-dist
+        let model = null;
         try {
-          const model = await extractPdfClient(arrayBuffer, file.name);
-          this.documentModel = model;
-          return model;
+          model = await extractPdfClient(arrayBuffer, file.name);
         } catch (clientErr) {
           console.warn('[documentStore] Client extraction failed, trying backend fallback:', clientErr);
-          const model = await extractPdf(file);
+          model = await extractPdf(file);
           if (model && !model.name) {
             model.name = file.name;
           }
-          this.documentModel = model;
-          return model;
         }
+
+        // Atomically commit new document state
+        this.originalPdfData = arrayBuffer;
+        this.originalFile = file;
+        this.fileKey = fileKey;
+        this.documentModel = model;
+        return model;
       } catch (err) {
         this.errorMessage = err.message || 'Failed to extract PDF document';
         throw err;
@@ -90,19 +126,23 @@ export const useDocumentStore = defineStore('document', {
     },
 
     /**
-     * Loads a sample PDF from frontend static assets (or backend fallback) and extracts layout.
+     * Loads a sample PDF, purges previous state, and extracts layout.
      *
      * @param {string} sampleFileName - Filename of sample PDF
      * @returns {Promise<Object>} Extracted DocumentModel
      */
     async loadSample(sampleFileName = 'sample.pdf') {
+      // 1. Completely purge any previous document state before new load
+      this.purgeDocumentState();
       this.isExtracting = true;
-      this.errorMessage = null;
       this.fileName = sampleFileName;
-      this.edits = [];
-      this.activeBlockId = null;
-      this.restoredSession = null;
-      this.isRestoredSession = false;
+
+      // 2. Clear any active draft cache in storage so previous edits never leak
+      try {
+        await sessionStorageService.clearDraftCache();
+      } catch (cacheErr) {
+        console.warn('[documentStore] clearDraftCache warning:', cacheErr);
+      }
 
       try {
         let rawBuffer = null;
@@ -130,20 +170,26 @@ export const useDocumentStore = defineStore('document', {
           throw new Error(`Failed to load sample PDF: ${sampleFileName}`);
         }
 
-        this.originalPdfData = rawBuffer;
-        this.originalFile = new Blob([rawBuffer.slice(0)], { type: 'application/pdf' });
+        const fileKey = await sessionStorageService.computeFileHash(rawBuffer, {
+          fileName: sampleFileName,
+          fileSize: rawBuffer.byteLength
+        });
 
         // Pure Client-side DocumentModel generation
+        let model = null;
         try {
-          const model = await extractPdfClient(rawBuffer, sampleFileName);
-          this.documentModel = model;
-          return model;
+          model = await extractPdfClient(rawBuffer, sampleFileName);
         } catch (clientErr) {
           console.warn('[documentStore] Client sample model extraction failed, trying backend:', clientErr);
-          const model = await extractSample(sampleFileName);
-          this.documentModel = model;
-          return model;
+          model = await extractSample(sampleFileName);
         }
+
+        // Atomically commit new document state
+        this.originalPdfData = rawBuffer;
+        this.originalFile = new Blob([rawBuffer.slice(0)], { type: 'application/pdf' });
+        this.fileKey = fileKey;
+        this.documentModel = model;
+        return model;
       } catch (err) {
         this.errorMessage = err.message || `Failed to extract sample PDF: ${sampleFileName}`;
         throw err;
@@ -262,19 +308,24 @@ export const useDocumentStore = defineStore('document', {
 
         const exportName = (this.fileName || 'document.pdf').replace(/\.pdf$/i, '') + '_edited.pdf';
         const userRotations = options.userRotations || this.restoredSession?.viewSettings?.userRotations || {};
+        const fileBlob = this.originalFile || new Blob([buffer.slice(0)], { type: 'application/pdf' });
 
-        // 1. Primary: 100% In-Browser PDF modification using pdf-lib
+        // 1. Primary: Route through backend PDFBox true token-stripping endpoint
         try {
-          const modifiedBytes = await exportModifiedPdf(buffer, this.edits, { userRotations });
-          const blob = new Blob([modifiedBytes], { type: 'application/pdf' });
-          triggerBrowserDownload(blob, exportName);
-          return blob;
-        } catch (clientErr) {
-          console.warn('[documentStore] Client pdf-lib export failed, attempting backend fallback:', clientErr);
-          const fileBlob = this.originalFile || new Blob([buffer.slice(0)], { type: 'application/pdf' });
-          const blob = await exportRedactedPdf(fileBlob, this.edits, exportName);
-          return blob;
+          const redactedBlob = await requestRedactedPdf(fileBlob, this.edits, exportName);
+          if (redactedBlob && redactedBlob.size > 0) {
+            triggerBrowserDownload(redactedBlob, exportName);
+            return redactedBlob;
+          }
+        } catch (backendErr) {
+          console.warn('[documentStore] Backend /api/export/redact failed or offline, attempting client fallback:', backendErr);
         }
+
+        // 2. Fallback: Pure client-side in-browser PDF modification using pdf-lib
+        const modifiedBytes = await exportModifiedPdf(buffer, this.edits, { userRotations });
+        const blob = new Blob([modifiedBytes], { type: 'application/pdf' });
+        triggerBrowserDownload(blob, exportName);
+        return blob;
       } catch (err) {
         this.errorMessage = err.message || 'Failed to export document to PDF.';
         throw err;
@@ -300,6 +351,7 @@ export const useDocumentStore = defineStore('document', {
       this.isExtracting = false;
       this.errorMessage = null;
       this.fileName = session.fileName || 'document.pdf';
+      this.fileKey = session.fileKey || null;
 
       let buffer = session.pdfBytes;
       if (buffer instanceof Uint8Array) {
@@ -324,7 +376,7 @@ export const useDocumentStore = defineStore('document', {
 
     /**
      * Saves edits directly into the same PDF file:
-     * 1. Bakes active redactions, inline edits, and rotations into pdfBytes via pdf-lib.
+     * 1. Routes through backend PDFBox true token-stripping endpoint (or fallback to pdf-lib).
      * 2. Overwrites local disk file via FileSystemFileHandle (or showSaveFilePicker / download).
      * 3. Updates active workspace state and IndexedDB with the new baseline pdfBytes (0 pending edits).
      *
@@ -349,9 +401,26 @@ export const useDocumentStore = defineStore('document', {
 
         const editsToApply = Array.isArray(options.edits) ? options.edits : this.edits;
         const userRotations = options.userRotations || this.restoredSession?.viewSettings?.userRotations || {};
+        const targetFilename = this.fileName || 'document.pdf';
+        const fileBlob = this.originalFile || new Blob([buffer.slice(0)], { type: 'application/pdf' });
 
-        // 1. Bake modifications into PDF binary via pdf-lib
-        const modifiedBytes = await exportModifiedPdf(buffer, editsToApply, { userRotations });
+        let modifiedBytes = null;
+
+        // 1. Primary: Route through backend PDFBox true token-stripping endpoint
+        try {
+          const redactedBlob = await requestRedactedPdf(fileBlob, editsToApply, targetFilename);
+          if (redactedBlob && redactedBlob.size > 0) {
+            const arrayBuf = await redactedBlob.arrayBuffer();
+            modifiedBytes = new Uint8Array(arrayBuf);
+          }
+        } catch (backendErr) {
+          console.warn('[documentStore] Backend /api/export/redact failed or offline, falling back to pdf-lib:', backendErr);
+        }
+
+        // 2. Fallback: Bake modifications into PDF binary via pdf-lib if backend unavailable
+        if (!modifiedBytes) {
+          modifiedBytes = await exportModifiedPdf(buffer, editsToApply, { userRotations });
+        }
 
         // 2. Overwrite file on disk using File System Access API if available
         let overwrittenDisk = false;
@@ -405,9 +474,14 @@ export const useDocumentStore = defineStore('document', {
           modifiedBytes.byteOffset,
           modifiedBytes.byteOffset + modifiedBytes.byteLength
         );
+        const newFileKey = await sessionStorageService.computeFileHash(newBuffer, {
+          fileName: this.fileName || 'document.pdf'
+        });
+
         this.isCommittedSave = true;
         this.originalPdfData = newBuffer;
         this.originalFile = new Blob([newBuffer], { type: 'application/pdf' });
+        this.fileKey = newFileKey;
         this.edits = [];
         this.restoredSession = null;
         this.isRestoredSession = false;
@@ -416,6 +490,7 @@ export const useDocumentStore = defineStore('document', {
         // 4. Update IndexedDB session with the new baseline PDF bytes
         try {
           const sessionData = {
+            fileKey: newFileKey,
             pdfBytes: newBuffer,
             fileName: this.fileName || 'document.pdf',
             documentModel: this.documentModel,
@@ -452,21 +527,8 @@ export const useDocumentStore = defineStore('document', {
      * Resets document state back to empty.
      */
     resetDocument() {
-      this.documentModel = null;
-      this.originalPdfData = null;
-      this.originalFile = null;
-      this.fileHandle = null;
-      this.edits = [];
-      this.activeBlockId = null;
-      this.fileName = '';
-      this.errorMessage = null;
-      this.isExtracting = false;
-      this.isExporting = false;
-      this.isSaving = false;
-      this.isCommittedSave = false;
-      this.lastSavedTime = null;
-      this.restoredSession = null;
-      this.isRestoredSession = false;
+      this.purgeDocumentState();
     }
   }
 });
+
