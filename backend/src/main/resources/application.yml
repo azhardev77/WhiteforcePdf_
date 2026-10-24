@@ -12,6 +12,12 @@ spring:
       max-request-size: 50MB
 
 app:
+  public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:5173}
   security:
     api-key: ${API_KEY:}
     header-name: X-API-KEY
+  sessions:
+    dir: ${APP_SESSIONS_DIR:target/sessions}
+    ttl-minutes: ${APP_SESSIONS_TTL:60}
+    max-size-bytes: ${APP_SESSIONS_MAX_SIZE:52428800}
+    rate-limit-per-minute: ${APP_SESSIONS_RATE_LIMIT:10}
