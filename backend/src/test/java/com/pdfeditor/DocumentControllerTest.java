@@ -249,12 +249,9 @@ class DocumentControllerTest {
 
     @Test
     @DisplayName("POST /api/documents/extract-sample with valid path returns 200 OK")
-    void testExtractSampleFile(@TempDir Path tempDir) throws Exception {
-        Path tempPdf = tempDir.resolve("sample.pdf");
-        java.nio.file.Files.write(tempPdf, samplePdfBytes);
-
+    void testExtractSampleFile() throws Exception {
         mockMvc.perform(post("/api/documents/extract-sample")
-                .param("filename", tempPdf.toAbsolutePath().toString()))
+                .param("filename", "sample.pdf"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.pages[0].pageNumber").value(1))
             .andExpect(jsonPath("$.pages[0].blocks[0].runs[0].text").value("Sample REST Controller PDF"));
@@ -269,8 +266,64 @@ class DocumentControllerTest {
     }
 
     @Test
+    @DisplayName("POST /api/documents/extract-sample rejects directory traversal (..) with 400 Bad Request")
+    void testExtractSampleRejectsTraversal() throws Exception {
+        mockMvc.perform(post("/api/documents/extract-sample")
+                .param("filename", "../sample-pdfs/sample.pdf"))
+            .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/documents/extract-sample")
+                .param("filename", "../../etc/passwd"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("POST /api/documents/extract-sample rejects absolute paths with 400 Bad Request")
+    void testExtractSampleRejectsAbsolutePaths(@TempDir Path tempDir) throws Exception {
+        Path tempFile = tempDir.resolve("outside.pdf");
+        java.nio.file.Files.write(tempFile, samplePdfBytes);
+
+        mockMvc.perform(post("/api/documents/extract-sample")
+                .param("filename", tempFile.toAbsolutePath().toString()))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("POST /api/documents/extract-sample rejects URL encoded traversal variants with 400 Bad Request")
+    void testExtractSampleRejectsEncodedTraversal() throws Exception {
+        mockMvc.perform(post("/api/documents/extract-sample")
+                .param("filename", "..%2f..%2fsample.pdf"))
+            .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/documents/extract-sample")
+                .param("filename", "%252e%252e%252fsample.pdf"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("GET /api/documents/raw-sample with valid filename returns 200 OK and PDF bytes")
+    void testGetRawSampleValid() throws Exception {
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/documents/raw-sample")
+                .param("filename", "sample.pdf"))
+            .andExpect(status().isOk())
+            .andExpect(header().string("Content-Type", "application/pdf"));
+    }
+
+    @Test
+    @DisplayName("GET /api/documents/raw-sample rejects traversal with 400 Bad Request")
+    void testGetRawSampleRejectsTraversal() throws Exception {
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/documents/raw-sample")
+                .param("filename", "../sample.pdf"))
+            .andExpect(status().isBadRequest());
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/documents/raw-sample")
+                .param("filename", "..%2f..%2fsample.pdf"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
     @DisplayName("Ensure sample-pdfs directory contains sample.pdf, tender.pdf, and resume.pdf")
-    void testGenerateSamplePdfFiles() throws Exception {
+    void testGenerateSamplePdfFiles(@TempDir Path tempDir) throws Exception {
         byte[] resumePdfBytes;
         try (PDDocument doc = new PDDocument()) {
             PDPage page = new PDPage(new PDRectangle(595.28f, 841.89f));
@@ -386,17 +439,12 @@ class DocumentControllerTest {
             resumePdfBytes = baosResume.toByteArray();
         }
 
-        Path[] dirs = new Path[] {
-            java.nio.file.Paths.get("sample-pdfs"),
-            java.nio.file.Paths.get("..", "sample-pdfs"),
-            java.nio.file.Paths.get("..", "frontend", "public", "samples")
-        };
-        for (Path dir : dirs) {
-            if (java.nio.file.Files.exists(dir)) {
-                java.nio.file.Files.write(dir.resolve("sample.pdf"), samplePdfBytes);
-                java.nio.file.Files.write(dir.resolve("tender.pdf"), samplePdfBytes);
-                java.nio.file.Files.write(dir.resolve("resume.pdf"), resumePdfBytes);
-            }
-        }
+        java.nio.file.Files.write(tempDir.resolve("sample.pdf"), samplePdfBytes);
+        java.nio.file.Files.write(tempDir.resolve("tender.pdf"), samplePdfBytes);
+        java.nio.file.Files.write(tempDir.resolve("resume.pdf"), resumePdfBytes);
+
+        org.junit.jupiter.api.Assertions.assertTrue(java.nio.file.Files.exists(tempDir.resolve("sample.pdf")));
+        org.junit.jupiter.api.Assertions.assertTrue(java.nio.file.Files.exists(tempDir.resolve("tender.pdf")));
+        org.junit.jupiter.api.Assertions.assertTrue(java.nio.file.Files.exists(tempDir.resolve("resume.pdf")));
     }
 }

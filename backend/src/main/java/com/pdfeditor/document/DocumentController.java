@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
@@ -42,36 +44,14 @@ public class DocumentController {
 
     @PostMapping("/extract-sample")
     public ResponseEntity<DocumentModel> extractSample(@RequestParam("filename") String filename) throws IOException {
-        if (filename == null || filename.isBlank()) {
+        Path resolvedPath;
+        try {
+            resolvedPath = resolveSamplePdf(filename);
+        } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().build();
         }
 
-        Path resolvedPath = null;
-
-        // Try as an absolute or direct path first
-        try {
-            Path directPath = Paths.get(filename);
-            if (Files.exists(directPath) && Files.isRegularFile(directPath)) {
-                resolvedPath = directPath;
-            }
-        } catch (InvalidPathException ignored) {
-        }
-
-        // If not found, try under sample-pdfs/ or ../sample-pdfs/
-        if (resolvedPath == null) {
-            Path[] candidates = new Path[] {
-                Paths.get("sample-pdfs", filename),
-                Paths.get("..", "sample-pdfs", filename)
-            };
-            for (Path candidate : candidates) {
-                if (Files.exists(candidate) && Files.isRegularFile(candidate)) {
-                    resolvedPath = candidate;
-                    break;
-                }
-            }
-        }
-
-        if (resolvedPath == null) {
+        if (resolvedPath == null || !Files.exists(resolvedPath) || !Files.isRegularFile(resolvedPath)) {
             return ResponseEntity.notFound().build();
         }
 
@@ -81,33 +61,14 @@ public class DocumentController {
 
     @org.springframework.web.bind.annotation.GetMapping("/raw-sample")
     public ResponseEntity<byte[]> getRawSample(@RequestParam("filename") String filename) throws IOException {
-        if (filename == null || filename.isBlank()) {
+        Path resolvedPath;
+        try {
+            resolvedPath = resolveSamplePdf(filename);
+        } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().build();
         }
 
-        Path resolvedPath = null;
-        try {
-            Path directPath = Paths.get(filename);
-            if (Files.exists(directPath) && Files.isRegularFile(directPath)) {
-                resolvedPath = directPath;
-            }
-        } catch (InvalidPathException ignored) {
-        }
-
-        if (resolvedPath == null) {
-            Path[] candidates = new Path[] {
-                Paths.get("sample-pdfs", filename),
-                Paths.get("..", "sample-pdfs", filename)
-            };
-            for (Path candidate : candidates) {
-                if (Files.exists(candidate) && Files.isRegularFile(candidate)) {
-                    resolvedPath = candidate;
-                    break;
-                }
-            }
-        }
-
-        if (resolvedPath == null) {
+        if (resolvedPath == null || !Files.exists(resolvedPath) || !Files.isRegularFile(resolvedPath)) {
             return ResponseEntity.notFound().build();
         }
 
@@ -115,5 +76,72 @@ public class DocumentController {
         return ResponseEntity.ok()
             .contentType(MediaType.APPLICATION_PDF)
             .body(bytes);
+    }
+
+    private Path resolveSamplePdf(String filename) {
+        if (filename == null || filename.isBlank()) {
+            throw new IllegalArgumentException("Filename must not be empty");
+        }
+
+        // Decode URL-encoded or double URL-encoded sequences
+        String decoded = filename;
+        try {
+            while (decoded.contains("%")) {
+                String next = URLDecoder.decode(decoded, StandardCharsets.UTF_8);
+                if (next.equals(decoded)) {
+                    break;
+                }
+                decoded = next;
+            }
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid URL encoding in filename: " + filename);
+        }
+
+        // Check for null characters
+        if (decoded.contains("\0")) {
+            throw new IllegalArgumentException("Filename contains null character: " + filename);
+        }
+
+        // Reject directory traversal sequences
+        if (decoded.contains("..")) {
+            throw new IllegalArgumentException("Directory traversal '..' is not permitted: " + filename);
+        }
+
+        // Reject absolute paths
+        try {
+            Path pathObj = Paths.get(decoded);
+            if (pathObj.isAbsolute()) {
+                throw new IllegalArgumentException("Absolute paths are not permitted: " + filename);
+            }
+        } catch (InvalidPathException e) {
+            throw new IllegalArgumentException("Invalid path syntax: " + filename);
+        }
+
+        // Locate sample-pdfs directory
+        Path baseDir = findSamplePdfsDirectory();
+        if (baseDir == null) {
+            return null;
+        }
+
+        Path resolved = baseDir.resolve(decoded).normalize();
+        if (!resolved.startsWith(baseDir) || resolved.equals(baseDir)) {
+            throw new IllegalArgumentException("Path escapes sample-pdfs directory: " + filename);
+        }
+
+        return resolved;
+    }
+
+    private Path findSamplePdfsDirectory() {
+        Path[] candidates = new Path[] {
+            Paths.get("sample-pdfs").toAbsolutePath().normalize(),
+            Paths.get("..", "sample-pdfs").toAbsolutePath().normalize(),
+            Paths.get("backend", "sample-pdfs").toAbsolutePath().normalize()
+        };
+        for (Path candidate : candidates) {
+            if (Files.isDirectory(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 }

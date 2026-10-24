@@ -11,11 +11,18 @@ import org.springframework.core.Ordered;
 @Configuration
 public class SecurityConfig {
 
-    @Value("${app.security.api-key:my_secure_secret_key_12345}")
+    @Value("${app.security.api-key:}")
     private String apiKey;
 
     @Value("${app.security.header-name:X-API-KEY}")
     private String headerName;
+
+    @jakarta.annotation.PostConstruct
+    public void validateApiKey() {
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            throw new IllegalStateException("API_KEY environment variable is required but not set. Please set the API_KEY environment variable before starting the application.");
+        }
+    }
 
     @Bean
     public ApiKeyAuthFilter apiKeyAuthFilter(ObjectMapper objectMapper) {

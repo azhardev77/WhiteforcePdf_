@@ -11,6 +11,8 @@ import org.springframework.http.MediaType;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -75,10 +77,20 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             providedApiKey = providedApiKey.trim();
         }
 
-        // Validate key
-        if (providedApiKey == null || !providedApiKey.equals(expectedApiKey)) {
-            log.warn("Unauthorized API access attempt to [{}] from IP [{}]: missing or invalid '{}' header",
-                    request.getRequestURI(), request.getRemoteAddr(), headerName);
+        // Validate key using constant-time comparison
+        boolean keyMatches = false;
+        if (providedApiKey != null && expectedApiKey != null && !expectedApiKey.isEmpty()) {
+            keyMatches = MessageDigest.isEqual(
+                    providedApiKey.getBytes(StandardCharsets.UTF_8),
+                    expectedApiKey.getBytes(StandardCharsets.UTF_8)
+            );
+        }
+
+        if (!keyMatches) {
+            String userAgent = request.getHeader("User-Agent");
+            String origin = request.getHeader("Origin");
+            log.warn("Unauthorized API access attempt to [{}] from IP [{}] (User-Agent: [{}], Origin: [{}]): missing or invalid '{}' header",
+                    request.getRequestURI(), request.getRemoteAddr(), userAgent, origin, headerName);
 
             sendUnauthorizedResponse(request, response);
             return;
