@@ -89,4 +89,16 @@ class ApiKeyAuthFilterTest {
                         .header("Access-Control-Request-Method", "POST"))
                 .andExpect(status().isOk());
     }
+
+    @Test
+    @DisplayName("Should handle unauthorized request with User-Agent and Origin headers")
+    void shouldLogCallerDetailsOnUnauthorizedRequest() throws Exception {
+        mockMvc.perform(post("/api/documents/extract-sample")
+                        .header("User-Agent", "CustomTestClient/1.0")
+                        .header("Origin", "http://attacker.example.com")
+                        .header("X-API-KEY", "invalid_key"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("Access-Control-Allow-Origin", "http://attacker.example.com"))
+                .andExpect(jsonPath("$.status", is(401)));
+    }
 }

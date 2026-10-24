@@ -10,7 +10,7 @@ const api = axios.create({
 
 // Request interceptor to automatically attach X-API-KEY header
 api.interceptors.request.use((config) => {
-  const apiKey = import.meta.env.VITE_API_KEY || 'my_secure_secret_key_12345';
+  const apiKey = import.meta.env.VITE_API_KEY;
   if (apiKey) {
     config.headers['X-API-KEY'] = apiKey;
   }

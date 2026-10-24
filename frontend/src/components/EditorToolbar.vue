@@ -53,6 +53,38 @@
       </button>
     </div>
 
+    <!-- Undo / Redo Stack Controls -->
+    <div class="toolbar-divider" />
+    <div class="toolbar-group history-group">
+      <button
+        type="button"
+        class="toolbar-btn"
+        title="Undo (Ctrl+Z)"
+        data-testid="btn-toolbar-undo"
+        :disabled="!documentStore.canUndo"
+        @click="$emit('undo')"
+      >
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="9 14 4 9 9 4" />
+          <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+        </svg>
+      </button>
+
+      <button
+        type="button"
+        class="toolbar-btn"
+        title="Redo (Ctrl+Y / Ctrl+Shift+Z)"
+        data-testid="btn-toolbar-redo"
+        :disabled="!documentStore.canRedo"
+        @click="$emit('redo')"
+      >
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="15 14 20 9 15 4" />
+          <path d="M4 20v-7a4 4 0 0 1 4-4h12" />
+        </svg>
+      </button>
+    </div>
+
     <div class="toolbar-divider" />
     <div class="toolbar-group status-group">
       <div class="mode-badge">
@@ -64,21 +96,47 @@
         <span>1:1 Visual Redaction Mode</span>
       </div>
 
-      <div class="edits-status" :class="{ 'has-edits': documentStore.editsCount > 0 }">
+      <div class="edits-status" :class="{ 'has-edits': (documentStore.paragraphEditsCount || documentStore.editsCount) > 0 }">
         <span class="status-dot" />
-        <span v-if="documentStore.editsCount === 0">Click any text on the page to edit</span>
-        <span v-else>{{ documentStore.editsCount }} {{ documentStore.editsCount === 1 ? 'redaction edit' : 'redaction edits' }} active</span>
+        <span v-if="(documentStore.paragraphEditsCount || documentStore.editsCount) === 0">Click any text on the page to edit</span>
+        <span v-else>{{ documentStore.paragraphEditsCount || documentStore.editsCount }} {{ (documentStore.paragraphEditsCount || documentStore.editsCount) === 1 ? 'redaction edit' : 'redaction edits' }} active</span>
       </div>
 
-      <button
-        v-if="documentStore.editsCount > 0"
-        type="button"
-        class="btn-clear-edits"
-        title="Revert all in-place edits back to original PDF"
-        @click="clearAllEdits"
-      >
-        Revert All
-      </button>
+      <div class="revert-all-container">
+        <button
+          v-if="(documentStore.paragraphEditsCount || documentStore.editsCount) > 0"
+          type="button"
+          class="btn-clear-edits btn-revert-all"
+          data-testid="btn-revert-all"
+          title="Revert all in-place edits back to original PDF"
+          @click="showRevertConfirm = !showRevertConfirm"
+        >
+          Revert All
+        </button>
+
+        <!-- Non-blocking inline confirmation popover replacing window.confirm -->
+        <div v-if="showRevertConfirm" class="inline-confirm-popover" data-testid="revert-confirm-popover">
+          <div class="popover-text">Revert all edits to original PDF?</div>
+          <div class="popover-actions">
+            <button
+              type="button"
+              class="btn-popover-cancel"
+              data-testid="btn-popover-cancel"
+              @click="showRevertConfirm = false"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn-popover-confirm"
+              data-testid="btn-popover-confirm"
+              @click="confirmRevertAll"
+            >
+              Revert
+            </button>
+          </div>
+        </div>
+      </div>
 
       <!-- Active Edit Transparency Toggle -->
       <div v-if="activeEdit" class="toolbar-divider" />
@@ -133,7 +191,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { ref, computed } from 'vue';
 import { useDocumentStore } from '@/stores/document';
 
 const props = defineProps({
@@ -143,9 +201,10 @@ const props = defineProps({
   }
 });
 
-const emit = defineEmits(['save', 'export', 'revert-all']);
+const emit = defineEmits(['save', 'export', 'undo', 'redo', 'revert-all']);
 
 const documentStore = useDocumentStore();
+const showRevertConfirm = ref(false);
 
 const activeEdit = computed(() => {
   if (!documentStore.activeBlockId) return null;
@@ -174,12 +233,12 @@ function fitZoom() {
   documentStore.setZoom(1.25);
 }
 
-function clearAllEdits() {
-  if (window.confirm('Revert all text changes back to original PDF?')) {
-    emit('revert-all');
-    documentStore.edits = [];
-    documentStore.activeBlockId = null;
-  }
+function confirmRevertAll() {
+  showRevertConfirm.value = false;
+  emit('revert-all');
+  documentStore.clearAllPatches();
+  documentStore.edits = [];
+  documentStore.activeBlockId = null;
 }
 </script>
 
@@ -324,6 +383,86 @@ function clearAllEdits() {
 
 .btn-clear-edits:hover {
   background: rgba(239, 68, 68, 0.15);
+}
+
+.revert-all-container {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.inline-confirm-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.4);
+  padding: 10px 12px;
+  min-width: 210px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: popoverFadeIn 0.15s ease-out;
+}
+
+@keyframes popoverFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.popover-text {
+  font-size: 11px;
+  font-weight: 500;
+  color: #e2e8f0;
+  white-space: normal;
+}
+
+.popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.btn-popover-cancel {
+  background: transparent;
+  border: 1px solid #475569;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.btn-popover-cancel:hover {
+  background: #334155;
+  color: #f1f5f9;
+}
+
+.btn-popover-confirm {
+  background: #dc2626;
+  border: 1px solid #ef4444;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.btn-popover-confirm:hover {
+  background: #b91c1c;
 }
 
 .btn-toolbar-save {
