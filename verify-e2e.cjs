@@ -507,6 +507,19 @@ const fs = require('fs');
     console.log('\n--- VERIFYING REQUIREMENT 7: Resume Header Layout & Strict Column Isolation ---');
 
     console.log('Navigating back to home screen to load resume.pdf...');
+    await page.evaluate(async () => {
+      if (window.__sessionStorageService?.clearCurrentSession) {
+        await window.__sessionStorageService.clearCurrentSession();
+      }
+      try {
+        const dbs = await window.indexedDB.databases?.();
+        if (dbs) {
+          for (const db of dbs) {
+            window.indexedDB.deleteDatabase(db.name);
+          }
+        }
+      } catch (e) {}
+    });
     await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
 
     console.log('Clicking "Open Resume PDF" button...');
@@ -722,6 +735,19 @@ const fs = require('fs');
     console.log('\n--- VERIFYING REQUIREMENT 8: Automatic Email & Phone Number Redaction on Upload ---');
 
     console.log('Reloading resume.pdf fresh to inspect initial automatic redaction state on load...');
+    await page.evaluate(async () => {
+      if (window.__sessionStorageService?.clearCurrentSession) {
+        await window.__sessionStorageService.clearCurrentSession();
+      }
+      try {
+        const dbs = await window.indexedDB.databases?.();
+        if (dbs) {
+          for (const db of dbs) {
+            window.indexedDB.deleteDatabase(db.name);
+          }
+        }
+      } catch (e) {}
+    });
     await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
     const freshResumeBtn = page.locator('button.btn-sample-resume');
     await freshResumeBtn.waitFor({ state: 'visible', timeout: 5000 });

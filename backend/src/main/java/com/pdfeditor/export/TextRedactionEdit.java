@@ -32,6 +32,8 @@ public class TextRedactionEdit {
     private double[] originalBoundingBox;
     private boolean isMoved = false;
     private java.util.List<double[]> whiteoutBoxes;
+    private boolean isNewPage = false;
+    private Integer pageIndex;
 
     public TextRedactionEdit() {
         this.pageNumber = 1;
@@ -205,6 +207,25 @@ public class TextRedactionEdit {
 
     public void setWhiteoutBoxes(java.util.List<double[]> whiteoutBoxes) {
         this.whiteoutBoxes = whiteoutBoxes;
+    }
+
+    public boolean isNewPage() {
+        return isNewPage;
+    }
+
+    public void setNewPage(boolean newPage) {
+        this.isNewPage = newPage;
+    }
+
+    public Integer getPageIndex() {
+        return pageIndex != null ? pageIndex : (pageNumber - 1);
+    }
+
+    public void setPageIndex(Integer pageIndex) {
+        this.pageIndex = pageIndex;
+        if (pageIndex != null) {
+            this.pageNumber = pageIndex + 1;
+        }
     }
 
     @Override

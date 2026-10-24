@@ -227,7 +227,16 @@ export async function exportModifiedPdf(originalPdfBytes, edits = [], options = 
     editsByPage[p].push(edit);
   }
 
-  for (let p = 1; p <= numPages; p++) {
+  const requestedPageNums = Object.keys(editsByPage).map(Number);
+  const maxRequestedPage = requestedPageNums.length > 0 ? Math.max(numPages, ...requestedPageNums) : numPages;
+  while (pdfDoc.getPageCount() < maxRequestedPage) {
+    const lastPage = pdfDoc.getPage(pdfDoc.getPageCount() - 1);
+    const { width, height } = lastPage.getSize();
+    pdfDoc.addPage([width, height]);
+  }
+  const totalDocPages = pdfDoc.getPageCount();
+
+  for (let p = 1; p <= totalDocPages; p++) {
     const pageIndex = p - 1;
     const page = pdfDoc.getPage(pageIndex);
     const { width: pageW, height: pageH } = page.getSize();

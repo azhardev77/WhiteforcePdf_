@@ -3,11 +3,13 @@
     class="pdf-canvas-editor-container"
     ref="containerRef"
     @mousedown="onBackgroundMouseDown"
+    @click="onBackgroundClick"
   >
     <!-- Pages Scroller -->
     <div
       class="pages-wrapper"
       @mousedown="onBackgroundMouseDown"
+      @click="onBackgroundClick"
     >
       <div
         v-for="pageIndex in numPages"
@@ -17,6 +19,7 @@
         class="pdf-page-card"
         :style="getPageCardStyle(pageIndex)"
         @mousedown="onBackgroundMouseDown"
+        @click="onBackgroundClick"
       >
         <!-- Page Header Label & Orientation Controls -->
         <div class="page-meta-header">
@@ -63,6 +66,7 @@
           class="page-stage"
           :style="getPageStageStyle(pageIndex)"
           @mousedown="onBackgroundMouseDown"
+          @click="onBackgroundClick"
         >
           <!-- Active Page: Mounted when visible in/near viewport -->
           <template v-if="isPageVisible(pageIndex)">
@@ -94,6 +98,7 @@
               class="pdf-page-overlay"
               :style="getPageOverlayStyle(pageIndex)"
               @mousedown="onBackgroundMouseDown"
+              @click="onBackgroundClick"
             >
               <div
                 v-for="block in getPageBlocks(pageIndex)"
@@ -104,7 +109,8 @@
                 :data-original-text="block.originalText"
                 :data-is-blank-line="block.isBlankLine ? 'true' : 'false'"
                 :data-is-moved="block.isMoved ? 'true' : 'false'"
-                :data-font-size="block.viewportFontSize"
+                :data-font-size="block.customFontSize || block.fontSize"
+                :data-has-collision="checkBlockCollision(block) ? 'true' : 'false'"
                 :title="block.text"
                 class="wps-paragraph-block overlay-text-box"
                 :class="{
@@ -114,7 +120,8 @@
                   'is-active': documentStore.activeBlockId === block.id,
                   'is-blank-line': block.isBlankLine,
                   'is-moved': block.isMoved,
-                  'is-dragging': draggingBlockId === block.id
+                  'is-dragging': draggingBlockId === block.id,
+                  'has-collision': checkBlockCollision(block)
                 }"
                 :style="getParagraphBlockStyle(block)"
                 @mouseenter="hoveredBlockId = block.id"
@@ -126,6 +133,7 @@
                 <div
                   v-if="editingBlockId === block.id || documentStore.activeBlockId === block.id"
                   class="block-floating-toolbar"
+                  :style="getFloatingToolbarStyle(block)"
                   data-testid="block-floating-toolbar"
                   @pointerdown.stop
                   @mousedown.stop.prevent
@@ -133,8 +141,10 @@
                   <button
                     type="button"
                     class="btn-toolbar-tool btn-font-dec"
+                    data-testid="btn-font-dec"
                     title="Decrease font size by 1pt (A-)"
-                    @mousedown.prevent="decreaseFontSize(block)"
+                    @mousedown.stop.prevent
+                    @click.stop.prevent="decreaseFontSize(block)"
                   >
                     A-
                   </button>
@@ -143,20 +153,34 @@
                     type="number"
                     class="toolbar-font-size-input"
                     title="Font size (pt)"
-                    :value="Math.round(block.customFontSize || block.fontSize || (block.viewportFontSize / (props.zoom || 1)))"
+                    :value="Math.round(block.customFontSize || block.fontSize || 12)"
                     min="6"
                     max="120"
                     @mousedown.stop
+                    @click.stop
                     @change="e => changeBlockFontSize(block, Number(e.target.value))"
                   />
 
                   <button
                     type="button"
                     class="btn-toolbar-tool btn-font-inc"
+                    data-testid="btn-font-inc"
                     title="Increase font size by 1pt (A+)"
-                    @mousedown.prevent="increaseFontSize(block)"
+                    @mousedown.stop.prevent
+                    @click.stop.prevent="increaseFontSize(block)"
                   >
                     A+
+                  </button>
+
+                  <button
+                    type="button"
+                    class="btn-toolbar-tool btn-auto-shrink"
+                    data-testid="btn-auto-shrink"
+                    title="Auto-shrink font size to fit container"
+                    @mousedown.stop.prevent
+                    @click.stop.prevent="autoShrinkToFit(block)"
+                  >
+                    Auto-fit
                   </button>
 
                   <div class="toolbar-divider" />
@@ -166,7 +190,8 @@
                     class="btn-toolbar-tool btn-font-bold"
                     :class="{ 'is-active': block.bold }"
                     title="Bold (B)"
-                    @mousedown.prevent="toggleBold(block)"
+                    @mousedown.stop.prevent
+                    @click.stop.prevent="toggleBold(block)"
                   >
                     <b>B</b>
                   </button>
@@ -176,7 +201,8 @@
                     class="btn-toolbar-tool btn-font-italic"
                     :class="{ 'is-active': block.italic }"
                     title="Italic (I)"
-                    @mousedown.prevent="toggleItalic(block)"
+                    @mousedown.stop.prevent
+                    @click.stop.prevent="toggleItalic(block)"
                   >
                     <i>I</i>
                   </button>
@@ -189,20 +215,53 @@
                       class="toolbar-color-input"
                       :value="getBlockColorHex(block)"
                       @mousedown.stop
+                      @click.stop
                       @input="e => setBlockColor(block, e.target.value)"
                     />
                     <span class="color-preview-pip" :style="{ backgroundColor: getBlockColorHex(block) }" />
                   </label>
 
+                  <div class="toolbar-divider" />
+
+                  <!-- Revert this block -->
                   <button
-                    v-if="isBlockEdited(block)"
                     type="button"
-                    class="btn-toolbar-tool btn-toolbar-revert"
+                    class="btn-toolbar-tool btn-toolbar-revert btn-floating-revert"
+                    data-testid="btn-floating-revert"
+                    :disabled="!isBlockEdited(block)"
                     title="Revert paragraph (1 click)"
-                    @mousedown.prevent="revertBlock(block)"
+                    @mousedown.stop.prevent
+                    @click.stop.prevent="revertBlock(block)"
                   >
-                    ↺
+                    ↺ Revert
                   </button>
+
+                  <!-- Delete this block -->
+                  <button
+                    type="button"
+                    class="btn-toolbar-tool btn-toolbar-delete btn-floating-delete"
+                    data-testid="btn-floating-delete"
+                    title="Delete paragraph text"
+                    @mousedown.stop.prevent
+                    @click.stop.prevent="deleteBlock(block)"
+                  >
+                    ✕ Delete
+                  </button>
+
+                  <!-- Collision Warning Badge -->
+                  <div
+                    v-if="checkBlockCollision(block)"
+                    class="toolbar-collision-badge"
+                    data-testid="collision-warning-badge"
+                    title="Text overlaps downstream elements"
+                  >
+                    <svg class="icon-sm text-amber" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                      <line x1="12" y1="9" x2="12" y2="13" />
+                      <line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                    <span>Text overlaps downstream elements</span>
+                  </div>
                 </div>
 
                 <!-- 4-Way Drag & Move Handle (Visible on hover or active/editing) -->
@@ -308,8 +367,18 @@ import { ref, watch, nextTick, onMounted, onBeforeUnmount, toRaw } from 'vue';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { useDocumentStore } from '@/stores/document';
+import { useHistoryStore } from '@/stores/history';
 import { redactPIIFromText, hasPII } from '@/utils/piiRedactor';
 import sessionStorageService from '@/services/sessionStorageService';
+import { computeLines, splitParagraphAtHeight, measureTextWidth as layoutMeasureWidth } from '@/services/textLayoutEngine';
+import {
+  performCascadingReflow,
+  PAGE_TOP_MARGIN,
+  PAGE_BOTTOM_MARGIN_OFFSET,
+  getPageBottomMargin,
+  cloneBlock,
+  captureFlowSnapshot
+} from '@/services/documentFlowEngine';
 
 // Configure pdfjs worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -328,6 +397,7 @@ const props = defineProps({
 const emit = defineEmits(['select-item', 'page-rendered']);
 
 const documentStore = useDocumentStore();
+const historyStore = useHistoryStore();
 
 const containerRef = ref(null);
 const canvasRefs = ref({});
@@ -360,8 +430,172 @@ const editedBlocksState = {};
 // Track blocks that have already undergone initial PII automatic redaction
 const autoRedactedBlockIds = new Set();
 
+const PAGE_BOTTOM_MARGIN = 40; // points
+
 let blurTimer = null;
 let sessionSaveDebounceTimer = null;
+let preEditSnapshot = null;
+
+function captureCurrentSnapshot() {
+  return {
+    blockPatches: Array.from((documentStore.blockPatches || new Map()).entries()),
+    edits: Array.isArray(documentStore.edits) ? JSON.parse(JSON.stringify(documentStore.edits)) : [],
+    documentPages: documentStore.documentModel?.pages ? JSON.parse(JSON.stringify(documentStore.documentModel.pages)) : [],
+    pageBlocksMap: JSON.parse(JSON.stringify(pageBlocksMap.value)),
+    editedBlocksState: JSON.parse(JSON.stringify(editedBlocksState)),
+    numPages: numPages.value,
+    timestamp: Date.now()
+  };
+}
+
+function createSnapshotCommand(description, beforeSnapshot, afterSnapshot) {
+  return {
+    id: `cmd_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+    description: description || 'Document edit',
+    execute() {
+      if (afterSnapshot) applyHistorySnapshot(afterSnapshot);
+    },
+    undo() {
+      if (beforeSnapshot) applyHistorySnapshot(beforeSnapshot);
+    },
+    redo() {
+      if (afterSnapshot) applyHistorySnapshot(afterSnapshot);
+    }
+  };
+}
+
+function recordCommand(description, beforeSnapshot, afterSnapshot) {
+  if (!beforeSnapshot || !afterSnapshot) return;
+  const cmd = createSnapshotCommand(description, beforeSnapshot, afterSnapshot);
+  historyStore.executeCommand(cmd);
+  documentStore.pushHistorySnapshot(beforeSnapshot);
+}
+
+function recordHistorySnapshot() {
+  documentStore.pushHistorySnapshot(captureCurrentSnapshot());
+}
+
+function getEditingBlock() {
+  if (!editingBlockId.value) return null;
+  for (const pageBlocks of Object.values(pageBlocksMap.value)) {
+    const b = pageBlocks.find(item => item.id === editingBlockId.value);
+    if (b) return b;
+  }
+  return null;
+}
+
+function applyHistorySnapshot(snapshot) {
+  if (!snapshot) return;
+  documentStore.applySnapshot(snapshot);
+
+  if (snapshot.pageBlocksMap) {
+    pageBlocksMap.value = JSON.parse(JSON.stringify(snapshot.pageBlocksMap));
+  }
+  if (snapshot.editedBlocksState) {
+    for (const k of Object.keys(editedBlocksState)) {
+      delete editedBlocksState[k];
+    }
+    Object.assign(editedBlocksState, JSON.parse(JSON.stringify(snapshot.editedBlocksState)));
+  }
+  if (snapshot.numPages != null) {
+    const oldNum = numPages.value;
+    numPages.value = snapshot.numPages;
+    if (snapshot.numPages < oldNum) {
+      for (let p = snapshot.numPages + 1; p <= oldNum; p++) {
+        delete pageBlocksMap.value[p];
+        delete canvasRefs.value[p];
+        delete pageViewports.value[p];
+        delete isPageCanvasRendered.value[p];
+        delete visiblePages.value[p];
+        delete pristineCanvasMap[p];
+      }
+    }
+  }
+
+  editingBlockId.value = null;
+  activeBlockText.value = '';
+  activeDeltaY.value = 0;
+
+  for (let p = 1; p <= numPages.value; p++) {
+    const canvas = canvasRefs.value[p];
+    const pristine = pristineCanvasMap[p];
+    if (canvas && pristine) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(pristine, 0, 0);
+        ctx.restore();
+      }
+    }
+    // Re-paint whiteout for any edited blocks on this page
+    const pBlocks = pageBlocksMap.value[p] || [];
+    for (const b of pBlocks) {
+      if (isBlockEdited(b) || Boolean(editedBlocksState[b.id]) || b.isOverflowChild) {
+        paintBlockOnCanvas(b, '#ffffff');
+      }
+    }
+  }
+
+  reflowVersion.value++;
+  const edits = buildRedactionPayload();
+  documentStore.setEdits(edits);
+  scheduleSessionSave();
+}
+
+function executeUndo() {
+  if (editingBlockId.value) {
+    commitActiveBlock();
+  }
+  if (historyStore.canUndo) {
+    historyStore.undo();
+  } else if (documentStore.canUndo) {
+    const currentSnapshot = captureCurrentSnapshot();
+    const prevSnapshot = documentStore.undo(currentSnapshot);
+    if (prevSnapshot) {
+      applyHistorySnapshot(prevSnapshot);
+    }
+  }
+}
+
+function executeRedo() {
+  if (editingBlockId.value) {
+    commitActiveBlock();
+  }
+  if (historyStore.canRedo) {
+    historyStore.redo();
+  } else if (documentStore.canRedo) {
+    const currentSnapshot = captureCurrentSnapshot();
+    const nextSnapshot = documentStore.redo(currentSnapshot);
+    if (nextSnapshot) {
+      applyHistorySnapshot(nextSnapshot);
+    }
+  }
+}
+
+function handleEditorKeydown(e) {
+  const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+  if (!isCtrlOrMeta) return;
+
+  const key = (e.key || '').toLowerCase();
+  if (key === 'z') {
+    e.preventDefault();
+    if (editingBlockId.value) {
+      commitActiveBlock();
+    }
+    if (e.shiftKey) {
+      executeRedo();
+    } else {
+      executeUndo();
+    }
+  } else if (key === 'y') {
+    e.preventDefault();
+    if (editingBlockId.value) {
+      commitActiveBlock();
+    }
+    executeRedo();
+  }
+}
 
 function scheduleSessionSave() {
   if (sessionSaveDebounceTimer) {
@@ -385,6 +619,7 @@ function saveCurrentSession() {
       fileName: documentStore.fileName || 'document.pdf',
       documentModel: toRaw(documentStore.documentModel),
       edits: currentEdits,
+      blockPatches: Array.from((documentStore.blockPatches || new Map()).entries()),
       editedBlocksState: JSON.parse(JSON.stringify(editedBlocksState)),
       pageBlocksMap: JSON.parse(JSON.stringify(pageBlocksMap.value)),
       autoRedactedBlockIds: Array.from(autoRedactedBlockIds),
@@ -409,7 +644,17 @@ function isPageVisible(pageIndex) {
 }
 
 function getPageBlocks(pageIndex) {
-  return pageBlocksMap.value[pageIndex] || [];
+  const blocks = pageBlocksMap.value[pageIndex] || [];
+  return blocks.filter(b => {
+    if (!b) return false;
+    if (b.isBlankLine) return true;
+    const txt = (b.text != null ? b.text : b.originalText) || '';
+    const trimmed = txt.trim();
+    if ((trimmed.length === 0 || /^[\s\u200B-\u200D\uFEFF]+$/.test(trimmed)) && !isBlockEdited(b)) {
+      return false;
+    }
+    return true;
+  });
 }
 
 // Backwards compatibility getter
@@ -423,7 +668,7 @@ function isBlockEdited(block) {
     return true;
   }
   if (block.isBlankLine) {
-    return Boolean(block.isEdited && block.text && block.text.trim());
+    return Boolean((block.isEdited || editedBlocksState[block.id]) && block.text && block.text.trim());
   }
   const hasStyleChange = (block.customFontSize != null) ||
                          (block.customColor != null) ||
@@ -431,7 +676,8 @@ function isBlockEdited(block) {
                          (block.bold !== block.originalBold) ||
                          (block.italic !== block.originalItalic);
   const hasTextChanged = (block.text || '').trim() !== (block.originalText || '').trim();
-  return Boolean(block.isEdited && (hasTextChanged || hasStyleChange));
+  const isEditedFlag = Boolean(block.isEdited || editedBlocksState[block.id]);
+  return Boolean((isEditedFlag || hasTextChanged || hasStyleChange) && (hasTextChanged || hasStyleChange || block.isMoved));
 }
 
 function getPageEditCount(pageIndex) {
@@ -444,9 +690,13 @@ function getPageDimensions(pageNumber) {
   if (vp && vp.rawWidth && vp.rawHeight) {
     return { width: vp.rawWidth, height: vp.rawHeight };
   }
+  if (pageViewports.value[1]?.rawWidth && pageViewports.value[1]?.rawHeight) {
+    return { width: pageViewports.value[1].rawWidth, height: pageViewports.value[1].rawHeight };
+  }
   if (props.documentModel && props.documentModel.pages) {
     const page = props.documentModel.pages.find(p => (p.pageNumber || 0) === pageNumber) 
-      || props.documentModel.pages[pageNumber - 1];
+      || props.documentModel.pages[pageNumber - 1]
+      || props.documentModel.pages[0];
     if (page && page.width && page.height) {
       return { width: page.width, height: page.height };
     }
@@ -473,8 +723,8 @@ function getRotatedBbox(bbox, pageNumber) {
 
 function getMaxAvailableWidth(block) {
   const pageBlocks = pageBlocksMap.value[block.pageNumber] || [];
-  const vp = pageViewports.value[block.pageNumber];
-  const pageW = vp ? vp.width : 600;
+  const dims = getPageDimensions(block.pageNumber);
+  const pageW = dims.width || 600;
   const currentLeft = block.customX != null ? block.customX : block.originalX;
   const currentY = block.customY != null ? block.customY : block.originalY;
   const currentH = block.originalHeight || 20;
@@ -499,10 +749,10 @@ function getMaxAvailableWidth(block) {
     });
     const nextOnRight = rightCandidates[0];
     const nextLeft = nextOnRight.customX != null ? nextOnRight.customX : nextOnRight.originalX;
-    return Math.max(block.originalWidth, nextLeft - currentLeft - (12 * (props.zoom || 1)));
+    return Math.max(block.originalWidth, nextLeft - currentLeft - 12);
   }
 
-  return Math.max(block.originalWidth, pageW - currentLeft - (24 * (props.zoom || 1)));
+  return Math.max(block.originalWidth, pageW - currentLeft - 24);
 }
 
 function getMaxAllowedWidth(block) {
@@ -621,19 +871,32 @@ function sampleTextColorFromCanvas(pristineCanvas, x, y, width, height, dpr = 1)
 }
 
 function decreaseFontSize(block) {
-  const currentSize = Math.round(block.customFontSize || block.fontSize || (block.viewportFontSize / (props.zoom || 1)));
+  if (blurTimer) {
+    clearTimeout(blurTimer);
+    blurTimer = null;
+  }
+  editingBlockId.value = block.id;
+  documentStore.activeBlockId = block.id;
+  const currentSize = Math.round(block.customFontSize || block.fontSize || 12);
   const newSize = Math.max(6, currentSize - 1);
   changeBlockFontSize(block, newSize);
 }
 
 function increaseFontSize(block) {
-  const currentSize = Math.round(block.customFontSize || block.fontSize || (block.viewportFontSize / (props.zoom || 1)));
+  if (blurTimer) {
+    clearTimeout(blurTimer);
+    blurTimer = null;
+  }
+  editingBlockId.value = block.id;
+  documentStore.activeBlockId = block.id;
+  const currentSize = Math.round(block.customFontSize || block.fontSize || 12);
   const newSize = Math.min(120, currentSize + 1);
   changeBlockFontSize(block, newSize);
 }
 
 function changeBlockFontSize(block, newSize) {
   if (!newSize || newSize < 6 || newSize > 120) return;
+  const beforeSnapshot = captureCurrentSnapshot();
   block.customFontSize = newSize;
   block.fontSize = newSize;
   block.viewportFontSize = newSize * (props.zoom || 1);
@@ -681,12 +944,34 @@ function changeBlockFontSize(block, newSize) {
     italic: block.italic
   };
 
+  documentStore.setPatch(block.pageNumber, block.id, {
+    newText: block.text,
+    originalText: block.originalText,
+    deltaY: block.deltaY || 0,
+    currentHeight: block.currentHeight || block.originalHeight,
+    customFontSize: block.customFontSize,
+    fontSize: block.fontSize,
+    customColor: block.customColor,
+    customWidth: block.customWidth,
+    bold: block.bold,
+    italic: block.italic,
+    isEdited: true
+  });
+
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  recordCommand('Change font size', beforeSnapshot, captureCurrentSnapshot());
   saveCurrentSession();
 }
 
 function toggleBold(block) {
+  if (blurTimer) {
+    clearTimeout(blurTimer);
+    blurTimer = null;
+  }
+  const beforeSnapshot = captureCurrentSnapshot();
+  editingBlockId.value = block.id;
+  documentStore.activeBlockId = block.id;
   block.bold = !block.bold;
   block.isEdited = isBlockEdited(block);
   reflowVersion.value++;
@@ -698,12 +983,33 @@ function toggleBold(block) {
     bold: block.bold,
     italic: block.italic
   };
+  documentStore.setPatch(block.pageNumber, block.id, {
+    newText: block.text,
+    originalText: block.originalText,
+    deltaY: block.deltaY || 0,
+    currentHeight: block.currentHeight || block.originalHeight,
+    customFontSize: block.customFontSize,
+    fontSize: block.fontSize,
+    customColor: block.customColor,
+    customWidth: block.customWidth,
+    bold: block.bold,
+    italic: block.italic,
+    isEdited: true
+  });
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  recordCommand('Toggle bold', beforeSnapshot, captureCurrentSnapshot());
   saveCurrentSession();
 }
 
 function toggleItalic(block) {
+  if (blurTimer) {
+    clearTimeout(blurTimer);
+    blurTimer = null;
+  }
+  const beforeSnapshot = captureCurrentSnapshot();
+  editingBlockId.value = block.id;
+  documentStore.activeBlockId = block.id;
   block.italic = !block.italic;
   block.isEdited = isBlockEdited(block);
   reflowVersion.value++;
@@ -715,13 +1021,34 @@ function toggleItalic(block) {
     bold: block.bold,
     italic: block.italic
   };
+  documentStore.setPatch(block.pageNumber, block.id, {
+    newText: block.text,
+    originalText: block.originalText,
+    deltaY: block.deltaY || 0,
+    currentHeight: block.currentHeight || block.originalHeight,
+    customFontSize: block.customFontSize,
+    fontSize: block.fontSize,
+    customColor: block.customColor,
+    customWidth: block.customWidth,
+    bold: block.bold,
+    italic: block.italic,
+    isEdited: true
+  });
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  recordCommand('Toggle italic', beforeSnapshot, captureCurrentSnapshot());
   saveCurrentSession();
 }
 
 function setBlockColor(block, hexColor) {
   if (!hexColor) return;
+  if (blurTimer) {
+    clearTimeout(blurTimer);
+    blurTimer = null;
+  }
+  const beforeSnapshot = captureCurrentSnapshot();
+  editingBlockId.value = block.id;
+  documentStore.activeBlockId = block.id;
   block.customColor = hexColor;
   block.color = hexColor;
   block.isEdited = true;
@@ -733,19 +1060,35 @@ function setBlockColor(block, hexColor) {
     currentHeight: block.currentHeight || block.originalHeight,
     customColor: hexColor
   };
+  documentStore.setPatch(block.pageNumber, block.id, {
+    newText: block.text,
+    originalText: block.originalText,
+    deltaY: block.deltaY || 0,
+    currentHeight: block.currentHeight || block.originalHeight,
+    customFontSize: block.customFontSize,
+    fontSize: block.fontSize,
+    customColor: hexColor,
+    customWidth: block.customWidth,
+    bold: block.bold,
+    italic: block.italic,
+    isEdited: true
+  });
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  recordCommand('Change text color', beforeSnapshot, captureCurrentSnapshot());
   saveCurrentSession();
 }
 
 function startResizeBlock(block, event) {
   if (event.button !== 0) return;
+  const resizeStartSnapshot = captureCurrentSnapshot();
   const startX = event.clientX;
   const startW = block.customWidth || block.width || block.originalWidth;
   const maxW = getMaxAvailableWidth(block);
+  const zoomScale = props.zoom || 1.0;
 
   function onResizeMove(e) {
-    const dx = e.clientX - startX;
+    const dx = (e.clientX - startX) / zoomScale;
     const newW = Math.min(maxW, Math.max(30, startW + dx));
     block.customWidth = newW;
     block.width = newW;
@@ -758,6 +1101,12 @@ function startResizeBlock(block, event) {
     window.removeEventListener('pointerup', onResizeUp);
     window.removeEventListener('pointercancel', onResizeUp);
 
+    if (block.customWidth !== startW) {
+      if (resizeStartSnapshot) {
+        documentStore.pushHistorySnapshot(resizeStartSnapshot);
+      }
+    }
+
     editedBlocksState[block.id] = {
       ...(editedBlocksState[block.id] || {}),
       newText: block.text,
@@ -765,6 +1114,19 @@ function startResizeBlock(block, event) {
       currentHeight: block.currentHeight || block.originalHeight,
       customWidth: block.customWidth
     };
+    documentStore.setPatch(block.pageNumber, block.id, {
+      newText: block.text,
+      originalText: block.originalText,
+      deltaY: block.deltaY || 0,
+      currentHeight: block.currentHeight || block.originalHeight,
+      customFontSize: block.customFontSize,
+      fontSize: block.fontSize,
+      customColor: block.customColor,
+      customWidth: block.customWidth,
+      bold: block.bold,
+      italic: block.italic,
+      isEdited: true
+    });
     const edits = buildRedactionPayload();
     documentStore.setEdits(edits);
     saveCurrentSession();
@@ -821,20 +1183,60 @@ function getPageTotalDeltaY(pageIndex) {
   return expanded.reduce((sum, b) => sum + b.deltaY, 0);
 }
 
-function updatePageVerticalReflow(pageNumber) {
-  const pageBlocks = pageBlocksMap.value[pageNumber] || [];
-  if (pageBlocks.length === 0) return;
+function onAddBlankPageCallback(pageNumber, width, height) {
+  if (pageNumber > numPages.value) {
+    documentStore.addBlankPage(width, height);
+    numPages.value = Math.max(numPages.value, pageNumber);
+    visiblePages.value[pageNumber] = true;
+    pageViewports.value[pageNumber] = {
+      width: width * (props.zoom || 1.0),
+      height: height * (props.zoom || 1.0),
+      rotation: 0,
+      rawWidth: width,
+      rawHeight: height
+    };
+    if (!pageBlocksMap.value[pageNumber]) {
+      pageBlocksMap.value[pageNumber] = [];
+    }
+    nextTick(() => {
+      renderBlankPage(pageNumber);
+    });
+  }
+}
 
-  for (const b of pageBlocks) {
-    const shiftY = getCumulativeDeltaYForY(pageNumber, b.originalY, b.id);
-    b.y = b.originalY + shiftY;
-    if (b.originalPdfY != null) {
-      b.pdfY = b.originalPdfY + (shiftY / props.zoom);
+function onRemoveDynamicPageCallback(pageNumber) {
+  if (pageNumber > (currentPdfDoc ? currentPdfDoc.numPages : 1)) {
+    documentStore.removeDynamicPage(pageNumber);
+    delete pageBlocksMap.value[pageNumber];
+    delete canvasRefs.value[pageNumber];
+    delete pageViewports.value[pageNumber];
+    delete isPageCanvasRendered.value[pageNumber];
+    delete visiblePages.value[pageNumber];
+    delete pristineCanvasMap[pageNumber];
+    if (numPages.value >= pageNumber) {
+      numPages.value = pageNumber - 1;
     }
   }
+}
+
+function updatePageVerticalReflow(pageNumber, customOptions = {}) {
+  const result = performCascadingReflow(
+    pageNumber,
+    pageBlocksMap.value,
+    getPageDimensions,
+    {
+      onAddBlankPage: onAddBlankPageCallback,
+      onRemoveDynamicPage: onRemoveDynamicPageCallback,
+      activeEditingId: editingBlockId.value,
+      activeDeltaY: activeDeltaY.value,
+      activeText: activeBlockText.value,
+      totalDocumentPages: currentPdfDoc ? currentPdfDoc.numPages : (numPages.value || 1),
+      ...customOptions
+    }
+  );
 
   reflowVersion.value++;
-  applyLiveCanvasReflow(pageNumber);
+  return result;
 }
 
 function applyLiveCanvasReflow(pageNumber) {
@@ -849,63 +1251,57 @@ function applyLiveCanvasReflow(pageNumber) {
   const ctx = canvas.getContext('2d');
   const expanded = getPageExpandedEdits(pageNumber);
 
+  // Invariant: Canvas dimensions MUST remain strictly fixed to pristine native dimensions (no ribbon stretching)
+  canvas.width = pristine.width;
+  canvas.height = pristine.height;
+  canvas.style.width = `${Math.floor(vp.width)}px`;
+  canvas.style.height = `${Math.floor(vp.height)}px`;
+  canvas.style.maxHeight = `${Math.floor(vp.height)}px`;
+  canvas.style.overflow = 'hidden';
+
   if (expanded.length === 0) {
-    if (canvas.height !== pristine.height) {
-      canvas.width = pristine.width;
-      canvas.height = pristine.height;
-      canvas.style.width = `${Math.floor(vp.width)}px`;
-      canvas.style.height = `${Math.floor(vp.height)}px`;
-    }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(pristine, 0, 0);
-    return;
-  }
+  } else {
+    const totalScale = (props.zoom || 1.0) * dpr;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  const totalDeltaY = expanded.reduce((sum, b) => sum + b.deltaY, 0);
-  const targetH = pristine.height + Math.round(totalDeltaY * dpr);
+    let prevSourceBottomY = 0;
+    let currentDestY = 0;
 
-  if (canvas.height !== targetH) {
-    canvas.width = pristine.width;
-    canvas.height = targetH;
-    canvas.style.width = `${Math.floor(vp.width)}px`;
-    canvas.style.height = `${Math.floor(vp.height + totalDeltaY)}px`;
-  }
+    for (const exp of expanded) {
+      const splitY = Math.round(exp.bottomY * totalScale);
+      const sliceHeight = Math.max(0, splitY - prevSourceBottomY);
 
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (sliceHeight > 0 && currentDestY < canvas.height) {
+        const drawH = Math.min(sliceHeight, canvas.height - currentDestY);
+        ctx.drawImage(
+          pristine,
+          0, prevSourceBottomY,
+          pristine.width, drawH,
+          0, currentDestY,
+          pristine.width, drawH
+        );
+        currentDestY += sliceHeight;
+      }
 
-  let prevSourceBottomY = 0;
-  let currentDestY = 0;
-
-  for (const exp of expanded) {
-    const splitY = Math.round(exp.bottomY);
-    const sliceHeight = Math.max(0, splitY - prevSourceBottomY);
-
-    if (sliceHeight > 0) {
-      ctx.drawImage(
-        pristine,
-        0, Math.round(prevSourceBottomY * dpr),
-        pristine.width, Math.round(sliceHeight * dpr),
-        0, Math.round(currentDestY * dpr),
-        pristine.width, Math.round(sliceHeight * dpr)
-      );
-      currentDestY += sliceHeight;
+      currentDestY += Math.round(exp.deltaY * totalScale);
+      prevSourceBottomY = splitY;
     }
 
-    currentDestY += exp.deltaY;
-    prevSourceBottomY = splitY;
-  }
-
-  const remainingH = Math.max(0, vp.height - prevSourceBottomY);
-  if (remainingH > 0) {
-    ctx.drawImage(
-      pristine,
-      0, Math.round(prevSourceBottomY * dpr),
-      pristine.width, Math.round(remainingH * dpr),
-      0, Math.round(currentDestY * dpr),
-      pristine.width, Math.round(remainingH * dpr)
-    );
+    const remainingH = Math.max(0, pristine.height - prevSourceBottomY);
+    if (remainingH > 0 && currentDestY < canvas.height) {
+      const drawH = Math.min(remainingH, canvas.height - currentDestY);
+      ctx.drawImage(
+        pristine,
+        0, prevSourceBottomY,
+        pristine.width, drawH,
+        0, currentDestY,
+        pristine.width, drawH
+      );
+    }
   }
 
   // Paint whiteout on canvas for any active or edited blocks on this page
@@ -913,6 +1309,25 @@ function applyLiveCanvasReflow(pageNumber) {
   for (const b of pageBlocks) {
     if (editingBlockId.value === b.id || isBlockEdited(b) || Boolean(editedBlocksState[b.id])) {
       paintBlockOnCanvas(b, '#ffffff', 3);
+    }
+  }
+
+  // Also paint whiteout for blocks that originally belonged to this page but spilled over to another page
+  for (const [pStr, pBlocks] of Object.entries(pageBlocksMap.value)) {
+    if (Number(pStr) !== pageNumber) {
+      for (const spilled of pBlocks) {
+        if (spilled.originalPageNumber === pageNumber) {
+          paintBlockOnCanvas({
+            ...spilled,
+            pageNumber,
+            x: spilled.originalX,
+            y: spilled.originalY,
+            width: spilled.originalWidth,
+            height: spilled.originalHeight,
+            lines: spilled.originalLines || spilled.lines
+          }, '#ffffff', 3);
+        }
+      }
     }
   }
 }
@@ -995,27 +1410,47 @@ function getBlockRects(block) {
  * Paints a solid whiteout box with bleed padding directly onto the underlying PDF.js canvas,
  * erasing any underlying text, descenders, link underlines, or anti-aliasing edges.
  */
-function paintBlockOnCanvas(block, color = '#ffffff', bleed = 3) {
+function paintBlockOnCanvas(block, color = '#ffffff', bleedPadding = null) {
   if (!block) return;
-  const pageNumber = block.pageNumber;
-  const canvas = canvasRefs.value[pageNumber];
+  const origPage = block.originalPageNumber || block.originalPage || block.pageNumber;
+  const canvas = canvasRefs.value[origPage];
   if (!canvas) return;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
+  const totalScale = (props.zoom || 1.0) * dpr;
+  const bleed = (bleedPadding != null ? bleedPadding : 3) * totalScale;
 
-  const rects = getBlockRects(block);
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = color;
 
-  for (const rect of rects) {
-    const rx = Math.max(0, Math.floor((rect.x - bleed) * dpr));
-    const ry = Math.max(0, Math.floor((rect.y - bleed) * dpr));
-    const rw = Math.ceil((rect.width + (bleed * 2)) * dpr);
-    const rh = Math.ceil((rect.height + (bleed * 2)) * dpr);
-    ctx.fillRect(rx, ry, rw, rh);
+  const origX = block.originalX != null ? block.originalX : (block.origX != null ? block.origX : block.x);
+  const origY = block.originalY != null ? block.originalY : (block.origY != null ? block.origY : block.y);
+  const origW = block.originalWidth != null ? block.originalWidth : (block.origW != null ? block.origW : (block.width || 100));
+  const origH = block.originalHeight != null ? block.originalHeight : (block.origH != null ? block.origH : (block.height || 20));
+
+  ctx.fillRect(
+    (origX * totalScale) - bleed,
+    (origY * totalScale) - bleed,
+    (origW * totalScale) + (bleed * 2),
+    (origH * totalScale) + (bleed * 2)
+  );
+
+  if (block.lines && block.lines.length > 0) {
+    for (const line of block.lines) {
+      const lx = line.originalX != null ? line.originalX : line.x;
+      const ly = line.originalY != null ? line.originalY : line.y;
+      const lw = line.originalWidth != null ? line.originalWidth : line.width;
+      const lh = line.originalHeight != null ? line.originalHeight : line.height;
+      ctx.fillRect(
+        (lx * totalScale) - bleed,
+        (ly * totalScale) - bleed,
+        (lw * totalScale) + (bleed * 2),
+        (lh * totalScale) + (bleed * 2)
+      );
+    }
   }
   ctx.restore();
 }
@@ -1034,6 +1469,7 @@ function restoreBlockOnCanvas(block, bleed = 4) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
+  const totalScale = (props.zoom || 1.0) * dpr;
 
   const expanded = getPageExpandedEdits(pageNumber);
   if (expanded.length > 0) {
@@ -1044,10 +1480,10 @@ function restoreBlockOnCanvas(block, bleed = 4) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     for (const rect of rects) {
-      const rx = Math.max(0, Math.floor((rect.x - bleed) * dpr));
-      const ry = Math.max(0, Math.floor((rect.y - bleed) * dpr));
-      const rw = Math.min(canvas.width - rx, Math.ceil((rect.width + (bleed * 2)) * dpr));
-      const rh = Math.min(canvas.height - ry, Math.ceil((rect.height + (bleed * 2)) * dpr));
+      const rx = Math.max(0, Math.floor(rect.x * totalScale - (bleed * dpr)));
+      const ry = Math.max(0, Math.floor(rect.y * totalScale - (bleed * dpr)));
+      const rw = Math.min(canvas.width - rx, Math.ceil((rect.width * totalScale) + (bleed * 2 * dpr)));
+      const rh = Math.min(canvas.height - ry, Math.ceil((rect.height * totalScale) + (bleed * 2 * dpr)));
       if (rw > 0 && rh > 0) {
         ctx.drawImage(pristine, rx, ry, rw, rh, rx, ry, rw, rh);
       }
@@ -1066,26 +1502,46 @@ function restoreBlockOnCanvas(block, bleed = 4) {
 
 function getPageWhiteoutMasks(pageIndex) {
   const blocks = pageBlocksMap.value[pageIndex] || [];
-  if (blocks.length === 0) return [];
-
   const masks = [];
-  const pad = 3; // 3px bleed padding (x - 3, y - 3, width + 6, height + 6) to 100% cover underlines and descenders
+  const pad = 3; // 3px bleed padding (x - 3, y - 3, width + 6, height + 6)
 
-  for (const block of blocks) {
+  // Collect blocks on this page
+  const allBlocksToMask = [...blocks];
+
+  // Also include any blocks that originally belonged to this page but spilled over
+  for (const [pStr, pBlocks] of Object.entries(pageBlocksMap.value)) {
+    if (Number(pStr) !== pageIndex) {
+      for (const spilled of pBlocks) {
+        if (spilled.originalPageNumber === pageIndex) {
+          allBlocksToMask.push({
+            ...spilled,
+            x: spilled.originalX,
+            y: spilled.originalY,
+            width: spilled.originalWidth,
+            height: spilled.originalHeight,
+            lines: spilled.originalLines || spilled.lines,
+            forceMask: true
+          });
+        }
+      }
+    }
+  }
+
+  for (const block of allBlocksToMask) {
     const isEditing = editingBlockId.value === block.id;
-    const isEdited = isBlockEdited(block) || isEditing || Boolean(editedBlocksState[block.id]);
+    const isEdited = block.forceMask || isBlockEdited(block) || isEditing || Boolean(editedBlocksState[block.id]);
     if (!isEdited) continue;
 
     // Blank lines: when not actively editing, do not mask line unless edited with text
-    if (block.isBlankLine && !isEditing && !isBlockEdited(block)) {
+    if (block.isBlankLine && !isEditing && !isBlockEdited(block) && !block.forceMask) {
       continue;
     }
 
     const currentText = isEditing ? activeBlockText.value : block.text;
-    const isFullyRedacted = (!currentText || currentText.trim().length === 0);
+    const isFullyRedacted = block.forceMask || (!currentText || currentText.trim().length === 0);
     const isPiiBlock = hasPII(block.originalText) || autoRedactedBlockIds.has(block.id);
 
-    if (isFullyRedacted && isPiiBlock) {
+    if (isFullyRedacted && isPiiBlock && !block.forceMask) {
       const exp = getLeftExpandedBlockBox(block, blocks);
       masks.push({
         id: `mask-${block.id}`,
@@ -1149,15 +1605,15 @@ function getParagraphBlockStyle(block) {
   if (!widthPx) {
     if (isSingleLine && (isEditing || isEdited)) {
       const currentText = isEditing ? activeBlockText.value : block.text;
-      const measured = measureTextWidth(currentText, block.viewportFontSize, block.fontFamily, block.bold, block.italic) + 16;
+      const measured = measureTextWidth(currentText, block.customFontSize || block.fontSize, block.fontFamily, block.bold, block.italic) + 16;
       widthPx = Math.min(maxW, Math.max(block.originalWidth, measured));
     } else {
       widthPx = Math.max(block.originalWidth, 20);
     }
   }
 
-  const posX = block.customX != null ? block.customX : block.originalX;
-  const posY = block.customY != null ? block.customY : block.y;
+  const posX = block.customX != null ? block.customX : (block.x != null ? block.x : block.originalX);
+  const posY = block.customY != null ? block.customY : (block.y != null ? block.y : block.originalY);
 
   let zIndexVal = 15;
   if (isEditing) {
@@ -1174,7 +1630,7 @@ function getParagraphBlockStyle(block) {
     width: `${Math.round(widthPx)}px`,
     maxWidth: `${Math.round(maxW)}px`,
     height: `${Math.round(heightPx)}px`,
-    fontSize: `${block.viewportFontSize}px`,
+    fontSize: `${block.customFontSize || block.fontSize || 11}px`,
     fontFamily: block.fontFamily || block.fontName || 'Helvetica, Arial, sans-serif',
     fontWeight: block.bold ? 'bold' : 'normal',
     fontStyle: block.italic ? 'italic' : 'normal',
@@ -1197,17 +1653,70 @@ function getParagraphBlockStyle(block) {
   return styleObj;
 }
 
+function getFloatingToolbarStyle(block) {
+  if (!block) return {};
+  const currentScale = props.zoom || 1.0;
+  const pageIndex = block.pageIndex || block.pageNumber || block.page || 1;
+  const dims = getPageDimensions(pageIndex);
+  const pageWidth = dims ? dims.width : 595;
+  const pageTopMargin = PAGE_TOP_MARGIN || 40;
+
+  const blockY = block.customY != null ? block.customY : (block.originalY != null ? block.originalY : (block.y || 0));
+  const blockX = block.customX != null ? block.customX : (block.originalX != null ? block.originalX : (block.x || 0));
+  const toolbarWidth = 340;
+
+  let placeBelow = false;
+  // 1. If block.y - 45 < pageTopMargin, position below the block
+  if (blockY - 45 < pageTopMargin) {
+    placeBelow = true;
+  } else {
+    // 2. Check collision with upstream blocks (e.g. section headings directly above)
+    const blocks = pageBlocksMap.value[pageIndex] || [];
+    for (const sibling of blocks) {
+      if (!sibling || sibling.id === block.id) continue;
+      const sibY = sibling.customY != null ? sibling.customY : (sibling.originalY != null ? sibling.originalY : (sibling.y || 0));
+      const sibH = sibling.currentHeight || sibling.height || sibling.originalHeight || 14;
+      const sibBottom = sibY + sibH;
+      // If sibling bottom encroaches the 45px zone above this block
+      if (sibBottom > (blockY - 45) && sibY < blockY) {
+        const sibX = sibling.customX != null ? sibling.customX : (sibling.originalX != null ? sibling.originalX : (sibling.x || 0));
+        const sibW = sibling.customWidth || sibling.width || sibling.originalWidth || 100;
+        const toolbarRight = blockX + toolbarWidth;
+        const sibRight = sibX + sibW;
+        if (Math.max(blockX, sibX) < Math.min(toolbarRight, sibRight)) {
+          placeBelow = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // 3. Clamp horizontal position so toolbar never clips off-screen regardless of zoom or page width:
+  // Math.max(8, Math.min(block.x, pageWidth - toolbarWidth - 8))
+  const targetX = Math.max(8, Math.min(blockX, pageWidth - toolbarWidth - 8));
+  const relativeLeft = targetX - blockX;
+
+  return {
+    top: placeBelow ? 'calc(100% + 8px)' : '-42px',
+    left: `${Math.round(relativeLeft)}px`,
+    zIndex: 100,
+    pointerEvents: 'auto'
+  };
+}
+
 function getParagraphTextareaStyle(block) {
   const linePitch = (block.lines && block.lines.length > 1)
     ? (block.originalHeight / block.lines.length)
-    : (block.viewportFontSize * 1.20);
+    : ((block.customFontSize || block.fontSize || 11) * 1.22);
   return {
-    fontSize: `${block.viewportFontSize}px`,
+    fontSize: `${block.customFontSize || block.fontSize || 11}px`,
     fontFamily: block.fontFamily || block.fontName || 'Helvetica, Arial, sans-serif',
     fontWeight: block.bold ? 'bold' : 'normal',
     fontStyle: block.italic ? 'italic' : 'normal',
     color: getBlockColorHex(block),
     lineHeight: `${Math.round(linePitch)}px`,
+    padding: '0',
+    margin: '0',
     backgroundColor: '#ffffff',
     opacity: '1',
     zIndex: 50
@@ -1217,9 +1726,9 @@ function getParagraphTextareaStyle(block) {
 function getParagraphDisplayStyle(block) {
   const linePitch = (block.lines && block.lines.length > 1)
     ? (block.originalHeight / block.lines.length)
-    : (block.viewportFontSize * 1.20);
+    : ((block.customFontSize || block.fontSize || 11) * 1.20);
   return {
-    fontSize: `${block.viewportFontSize}px`,
+    fontSize: `${block.customFontSize || block.fontSize || 11}px`,
     fontFamily: block.fontFamily || block.fontName || 'Helvetica, Arial, sans-serif',
     fontWeight: block.bold ? 'bold' : 'normal',
     fontStyle: block.italic ? 'italic' : 'normal',
@@ -1229,43 +1738,42 @@ function getParagraphDisplayStyle(block) {
 }
 
 function getPageCardStyle(pageIndex) {
-  const vp = pageViewports.value[pageIndex];
-  if (vp && vp.width) {
-    return { width: `${Math.ceil(vp.width)}px` };
-  }
+  const currentScale = props.zoom || 1.0;
   const dims = getPageDimensions(pageIndex);
-  return { width: `${Math.ceil(dims.width * props.zoom)}px` };
+  const scaledWidth = Math.ceil(dims.width * currentScale);
+  return {
+    width: `${scaledWidth}px`,
+    minWidth: `${scaledWidth}px`
+  };
 }
 
 function getPageStageStyle(pageIndex) {
-  const totalDeltaY = getPageTotalDeltaY(pageIndex);
-  const vp = pageViewports.value[pageIndex];
-  if (vp && vp.width && vp.height) {
-    return {
-      width: `${Math.ceil(vp.width)}px`,
-      height: `${Math.ceil(vp.height + totalDeltaY)}px`
-    };
-  }
+  const currentScale = props.zoom || 1.0;
   const dims = getPageDimensions(pageIndex);
+  const scaledWidth = Math.ceil(dims.width * currentScale);
+  const scaledHeight = Math.ceil(dims.height * currentScale);
   return {
-    width: `${Math.ceil(dims.width * props.zoom)}px`,
-    height: `${Math.ceil((dims.height * props.zoom) + totalDeltaY)}px`
+    width: `${scaledWidth}px`,
+    minWidth: `${scaledWidth}px`,
+    maxWidth: `${scaledWidth}px`,
+    height: `${scaledHeight}px`,
+    minHeight: `${scaledHeight}px`,
+    maxHeight: `${scaledHeight}px`,
+    position: 'relative',
+    overflow: 'hidden'
   };
 }
 
 function getPageOverlayStyle(pageIndex) {
-  const totalDeltaY = getPageTotalDeltaY(pageIndex);
-  const vp = pageViewports.value[pageIndex];
-  if (vp && vp.width && vp.height) {
-    return {
-      width: `${Math.ceil(vp.width)}px`,
-      height: `${Math.ceil(vp.height + totalDeltaY)}px`
-    };
-  }
+  const currentScale = props.zoom || 1.0;
   const dims = getPageDimensions(pageIndex);
   return {
-    width: `${Math.ceil(dims.width * props.zoom)}px`,
-    height: `${Math.ceil((dims.height * props.zoom) + totalDeltaY)}px`
+    width: `${Math.ceil(dims.width)}px`,
+    height: `${Math.ceil(dims.height)}px`,
+    maxHeight: `${Math.ceil(dims.height)}px`,
+    overflow: 'hidden',
+    transform: `scale(${currentScale})`,
+    transformOrigin: 'top left'
   };
 }
 
@@ -1282,6 +1790,153 @@ function findDotRange(text) {
     };
   }
   return null;
+}
+
+/**
+ * 2D Bounding Box Collision (AABB Check):
+ * Calculates whether the active/candidate box breaches sibling downstream elements' 2D bounds.
+ * Performs a full 2D Axis-Aligned Bounding Box (AABB) intersection check (both X and Y overlap).
+ * Side-by-side columns/links on the same horizontal row do NOT trigger false-positive warnings.
+ */
+function checkBlockCollision(block) {
+  if (!block) return false;
+  const pageBlocks = pageBlocksMap.value[block.pageNumber] || [];
+  const startX = block.customX != null ? block.customX : (block.originalX != null ? block.originalX : block.x);
+  const blockW = block.customWidth || block.width || block.originalWidth || 100;
+  const endX = startX + blockW;
+
+  const startY = block.customY != null ? block.customY : (block.originalY != null ? block.originalY : block.y);
+  const isEditing = editingBlockId.value === block.id;
+
+  // Calculate effective height including font-size expansion and multi-line wrapping
+  const currentFs = block.customFontSize || block.fontSize || 12;
+  const origFs = block.originalFontSize || block.fontSize || 12;
+  const fsScale = Math.max(1.0, currentFs / (origFs || 12));
+  const estimatedFsHeight = (block.originalHeight || 20) * fsScale;
+
+  const currentHeight = isEditing
+    ? Math.max(block.currentHeight || block.originalHeight, block.originalHeight + (activeDeltaY.value || 0), estimatedFsHeight)
+    : Math.max(block.currentHeight || block.originalHeight || 20, estimatedFsHeight);
+  const endY = startY + currentHeight;
+
+  for (const sib of pageBlocks) {
+    if (sib.id === block.id) continue;
+
+    const sibStartX = sib.customX != null ? sib.customX : (sib.originalX != null ? sib.originalX : sib.x);
+    const sibW = sib.customWidth || sib.width || sib.originalWidth || 100;
+    const sibEndX = sibStartX + sibW;
+
+    const sibStartY = sib.customY != null ? sib.customY : (sib.originalY != null ? sib.originalY : sib.y);
+    const sibH = sib.currentHeight || sib.originalHeight || sib.height || 20;
+    const sibEndY = sibStartY + sibH;
+
+    // Full 2D Axis-Aligned Bounding Box (AABB) intersection:
+    // Both horizontal (X) and vertical (Y) intervals must intersect.
+    const xOverlap = Math.min(endX, sibEndX) - Math.max(startX, sibStartX);
+    const yOverlap = Math.min(endY, sibEndY) - Math.max(startY, sibStartY);
+
+    // Require genuine horizontal intersection (> 6px) to avoid touching boundary edges
+    // and vertical intersection (> 2px)
+    if (xOverlap > 6 && yOverlap > 2) {
+      // Must be an overlap encroaching downstream sibling (endY breaches sibStartY)
+      if (endY > sibStartY + 2 && sibStartY >= startY - 2) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Auto-Shrink to Fit Container:
+ * Helper function using binary search on font-size based on container scrollHeight <= clientHeight.
+ */
+function autoShrinkToFit(block) {
+  if (!block) return;
+  const currentSize = Math.round(block.customFontSize || block.fontSize || 12);
+  const targetHeight = block.originalHeight || 24;
+  const targetWidth = block.width || block.originalWidth || 200;
+
+  let low = 8.5;
+  let high = currentSize;
+  let bestSize = low;
+
+  const el = activeBlockTextareaRef.value;
+  const textarea = Array.isArray(el) ? el[0] : el;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    let fits = false;
+
+    if (textarea && editingBlockId.value === block.id) {
+      const prevFs = textarea.style.fontSize;
+      const prevH = textarea.style.height;
+      textarea.style.fontSize = `${mid}px`;
+      textarea.style.height = `${targetHeight}px`;
+      fits = textarea.scrollHeight <= textarea.clientHeight + 2;
+      textarea.style.fontSize = prevFs;
+      textarea.style.height = prevH;
+    } else {
+      const text = (editingBlockId.value === block.id ? activeBlockText.value : block.text) || block.originalText || '';
+      const charWidth = mid * 0.55;
+      const charsPerLine = Math.max(1, Math.floor(targetWidth / charWidth));
+      const lineCount = Math.max(1, Math.ceil(text.length / charsPerLine));
+      const estimatedHeight = lineCount * (mid * 1.25);
+      fits = estimatedHeight <= targetHeight + 2;
+    }
+
+    if (fits) {
+      bestSize = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  bestSize = Math.min(bestSize, Math.round(block.originalFontSize || 12));
+  changeBlockFontSize(block, bestSize);
+  return bestSize;
+}
+
+/**
+ * Strict Hit-Testing:
+ * Verifies that a clicked block is a valid text block extracted from PDF.js getTextContent().
+ */
+function isValidTextBlock(block) {
+  if (!block || !block.id) return false;
+  if (block.isBlankLine) return true;
+  const hasText = Boolean(
+    (block.text && block.text.trim().length > 0) ||
+    (block.originalText && block.originalText.trim().length > 0)
+  );
+  return hasText;
+}
+
+function isClickIntersectingBlock(block, event) {
+  if (!event || typeof event.clientX !== 'number' || typeof event.clientY !== 'number') return true;
+  const target = event.target;
+  const blockEl = target?.closest?.('.wps-paragraph-block');
+  if (blockEl && (blockEl.getAttribute('data-block-id') === block.id || blockEl.getAttribute('data-id') === block.id)) {
+    const rect = blockEl.getBoundingClientRect();
+    const tol = 3;
+    return (
+      event.clientX >= rect.left - tol &&
+      event.clientX <= rect.right + tol &&
+      event.clientY >= rect.top - tol &&
+      event.clientY <= rect.bottom + tol
+    );
+  }
+  return true;
+}
+
+function dismissActiveSelection() {
+  if (editingBlockId.value) {
+    commitActiveBlock();
+  }
+  documentStore.activeBlockId = null;
+  editingBlockId.value = null;
+  activeBlockText.value = '';
+  activeDeltaY.value = 0;
 }
 
 const draggingBlockId = ref(null);
@@ -1315,27 +1970,46 @@ function onBlockMouseDown(block, event) {
 }
 
 function onBackgroundMouseDown(event) {
-  if (!editingBlockId.value) return;
   const target = event.target;
   if (!target) return;
 
-  // Don't commit if clicking inside active editing block or its controls
+  // Don't commit/dismiss if clicking inside active editing block or its toolbar/controls
   if (
     target.closest('.block-floating-toolbar') ||
     target.closest('.block-drag-handle') ||
     target.closest('.block-resize-handle') ||
     target.closest('.wps-paragraph-textarea') ||
-    target.closest('.wps-paragraph-block.is-editing')
+    target.closest('.btn-toolbar-tool') ||
+    target.closest('.toolbar-font-size-input') ||
+    target.closest('.toolbar-color-label')
   ) {
     return;
   }
 
-  // If clicking on another block, let onBlockMouseDown handle the switch
+  // If clicking on another block, let onBlockMouseDown / onParagraphClick handle the switch
   if (target.closest('.wps-paragraph-block')) {
     return;
   }
 
-  commitActiveBlock();
+  // Empty whitespace click: immediately blur/deselect active box and dismiss toolbar
+  dismissActiveSelection();
+}
+
+function onBackgroundClick(event) {
+  const target = event.target;
+  if (!target) return;
+
+  if (
+    target.closest('.block-floating-toolbar') ||
+    target.closest('.block-drag-handle') ||
+    target.closest('.block-resize-handle') ||
+    target.closest('.wps-paragraph-textarea') ||
+    target.closest('.wps-paragraph-block')
+  ) {
+    return;
+  }
+
+  dismissActiveSelection();
 }
 
 function startDragBlock(block, event) {
@@ -1344,18 +2018,20 @@ function startDragBlock(block, event) {
     commitActiveBlock();
   }
 
+  const dragStartSnapshot = captureCurrentSnapshot();
   draggingBlockId.value = block.id;
   documentStore.activeBlockId = block.id;
 
   const startX = event.clientX;
   const startY = event.clientY;
 
-  const blockStartX = block.customX != null ? block.customX : (block.originalX != null ? block.originalX : block.x);
-  const blockStartY = block.customY != null ? block.customY : (block.originalY != null ? block.originalY : block.y);
+  const blockStartX = block.customX != null ? block.customX : (block.x != null ? block.x : block.originalX);
+  const blockStartY = block.customY != null ? block.customY : (block.y != null ? block.y : block.originalY);
 
-  const vp = pageViewports.value[block.pageNumber];
-  const maxW = vp ? vp.width : 800;
-  const maxH = vp ? vp.height : 1100;
+  const dims = getPageDimensions(block.pageNumber);
+  const maxW = dims.width || 800;
+  const maxH = dims.height || 1100;
+  const zoomScale = props.zoom || 1.0;
 
   const blockW = block.originalWidth || block.width || 100;
   const blockH = block.originalHeight || block.height || 30;
@@ -1368,8 +2044,8 @@ function startDragBlock(block, event) {
   let hasMoved = false;
 
   function onPointerMove(e) {
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
+    const dx = (e.clientX - startX) / zoomScale;
+    const dy = (e.clientY - startY) / zoomScale;
 
     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
       hasMoved = true;
@@ -1386,7 +2062,7 @@ function startDragBlock(block, event) {
     reflowVersion.value++;
   }
 
-  function onPointerUp(e) {
+  function onPointerUp() {
     window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('pointercancel', onPointerUp);
@@ -1396,6 +2072,9 @@ function startDragBlock(block, event) {
     }, 50);
 
     if (hasMoved || block.isMoved) {
+      if (dragStartSnapshot) {
+        documentStore.pushHistorySnapshot(dragStartSnapshot);
+      }
       block.isEdited = true;
       editedBlocksState[block.id] = {
         ...(editedBlocksState[block.id] || {}),
@@ -1407,8 +2086,17 @@ function startDragBlock(block, event) {
         isMoved: true
       };
 
+      documentStore.setPatch(block.pageNumber, block.id, {
+        newText: block.text,
+        customX: block.customX,
+        customY: block.customY,
+        isMoved: true,
+        isEdited: true
+      });
+
       const edits = buildRedactionPayload();
       documentStore.setEdits(edits);
+      recordCommand('Move block', dragStartSnapshot, captureCurrentSnapshot());
       saveCurrentSession();
     }
   }
@@ -1419,6 +2107,15 @@ function startDragBlock(block, event) {
 }
 
 function onParagraphClick(block, event) {
+  // Requirement 2: Strict hit-testing
+  if (!isValidTextBlock(block)) {
+    dismissActiveSelection();
+    return;
+  }
+  if (!isClickIntersectingBlock(block, event)) {
+    dismissActiveSelection();
+    return;
+  }
   if (editingBlockId.value === block.id) return;
   if (draggingBlockId.value) return;
   if (editingBlockId.value && editingBlockId.value !== block.id) {
@@ -1438,11 +2135,10 @@ function startEditingBlock(block, event) {
     commitActiveBlock();
   }
 
+  preEditSnapshot = captureCurrentSnapshot();
   editingBlockId.value = block.id;
-  // Rule 1: Solid #FFFFFF paint with 3px bleed padding on underlying canvas for regular text blocks
-  if (!block.isBlankLine && !block.transparentBackground) {
-    paintBlockOnCanvas(block, '#ffffff', 3);
-  }
+  // Ensure underlying canvas text is completely knocked out with a clean whiteout rect before textarea gains focus
+  paintBlockOnCanvas(block, '#ffffff', 3);
 
   if (block.isBlankLine) {
     const raw = block.text != null ? block.text : block.originalText;
@@ -1455,7 +2151,7 @@ function startEditingBlock(block, event) {
   const isSingleLine = !block.lines || block.lines.length <= 1;
   if (isSingleLine && !block.customWidth) {
     const maxAvail = getMaxAvailableWidth(block);
-    const measured = measureTextWidth(activeBlockText.value, block.viewportFontSize, block.fontFamily, block.bold, block.italic) + 16;
+    const measured = measureTextWidth(activeBlockText.value, block.customFontSize || block.fontSize, block.fontFamily, block.bold, block.italic) + 16;
     block.width = Math.min(maxAvail, Math.max(block.originalWidth, measured));
   }
 
@@ -1502,28 +2198,83 @@ function onParagraphInput(block, event) {
     block.isEdited = Boolean(activeBlockText.value && activeBlockText.value.trim());
   }
 
+  const linePitch = (block.lines && block.lines.length > 1)
+    ? (block.originalHeight / block.lines.length)
+    : ((block.customFontSize || block.fontSize || 12) * 1.22);
+
+  const fontSpec = {
+    fontSize: block.customFontSize || block.fontSize || 12,
+    fontFamily: block.fontFamily || 'Helvetica, Arial, sans-serif',
+    bold: Boolean(block.bold),
+    italic: Boolean(block.italic),
+    lineHeight: Math.round(linePitch)
+  };
+
   const isSingleLine = !block.lines || block.lines.length <= 1;
-  if (isSingleLine && !block.customWidth) {
-    const maxAvail = getMaxAvailableWidth(block);
-    const measuredW = measureTextWidth(activeBlockText.value, block.viewportFontSize, block.fontFamily, block.bold, block.italic) + 16;
+  const maxAvail = getMaxAvailableWidth(block);
+  if (isSingleLine && !block.customWidth && (activeBlockText.value || '').length < 80) {
+    const measuredW = layoutMeasureWidth(activeBlockText.value, fontSpec) + 16;
     block.width = Math.min(maxAvail, Math.max(block.originalWidth, measuredW));
   }
 
+  const containerW = block.width || block.originalWidth || maxAvail || 500;
+  const computed = computeLines(activeBlockText.value, fontSpec, containerW);
+
+  let currentH = computed.height;
   if (el) {
     el.style.height = 'auto';
     const scrollH = el.scrollHeight;
-    const baseH = block.originalHeight;
+    const baseH = block.originalHeight || 20;
     const isLineWrapped = isSingleLine ? (scrollH > baseH * 1.35) : (scrollH > baseH + 3);
-    const currentH = isLineWrapped ? scrollH : baseH;
+    currentH = isLineWrapped ? Math.max(scrollH, computed.height) : Math.max(baseH, computed.height);
     el.style.height = `${currentH}px`;
-
-    const extraH = Math.max(0, currentH - baseH);
-    block.deltaY = extraH;
-    block.currentHeight = currentH;
-    activeDeltaY.value = extraH;
   }
 
-  updatePageVerticalReflow(block.pageNumber);
+  const deltaFromInput = Math.max(0, currentH - (block.originalHeight || 20));
+  activeDeltaY.value = deltaFromInput;
+  block.deltaY = deltaFromInput;
+  block.currentHeight = currentH;
+
+  const reflowResult = updatePageVerticalReflow(block.pageNumber, {
+    activeEditingId: block.id,
+    activeText: activeBlockText.value,
+    activeDeltaY: deltaFromInput
+  });
+
+  if (reflowResult && reflowResult.splitInfo) {
+    activeBlockText.value = reflowResult.splitInfo.fitText;
+    block.text = reflowResult.splitInfo.fitText;
+    block.currentHeight = reflowResult.splitInfo.fitHeight;
+    block.deltaY = Math.max(0, reflowResult.splitInfo.fitHeight - (block.originalHeight || 20));
+    activeDeltaY.value = block.deltaY;
+    if (el) {
+      el.value = reflowResult.splitInfo.fitText;
+      el.style.height = `${reflowResult.splitInfo.fitHeight}px`;
+    }
+  } else {
+    const effectiveHeight = block.currentHeight || currentH;
+    block.currentHeight = effectiveHeight;
+    block.deltaY = Math.max(0, effectiveHeight - (block.originalHeight || 20));
+    activeDeltaY.value = block.deltaY;
+    if (el) {
+      el.style.height = `${effectiveHeight}px`;
+      if (block.customFontSize) {
+        el.style.fontSize = `${block.customFontSize}px`;
+      }
+    }
+  }
+
+  // Paint whiteout on canvas so underlying original raster text never bleeds through
+  paintBlockOnCanvas(block, '#ffffff');
+
+  // Synchronize patch with modular edit store
+  documentStore.setPatch(block.pageNumber, block.id, {
+    newText: activeBlockText.value,
+    originalText: block.originalText,
+    deltaY: block.deltaY,
+    currentHeight: block.currentHeight,
+    isEdited: true
+  });
 
   // Synchronize redaction payload with store
   const edits = buildRedactionPayload();
@@ -1552,6 +2303,7 @@ function commitActiveBlock() {
   if (targetBlock) {
     targetBlock.text = activeBlockText.value != null ? activeBlockText.value : '';
     targetBlock.deltaY = activeDeltaY.value || 0;
+    targetBlock.currentHeight = (targetBlock.originalHeight || 20) + (targetBlock.deltaY || 0);
 
     const hasStyleOrPosChanged = Boolean(
       targetBlock.isMoved ||
@@ -1565,6 +2317,10 @@ function commitActiveBlock() {
 
     if (targetBlock.isBlankLine) {
       if (targetBlock.text && targetBlock.text.trim()) {
+        if (preEditSnapshot) {
+          recordCommand('Edit line text', preEditSnapshot, captureCurrentSnapshot());
+          preEditSnapshot = null;
+        }
         targetBlock.isEdited = true;
         editedBlocksState[targetBlock.id] = {
           newText: targetBlock.text,
@@ -1576,14 +2332,32 @@ function commitActiveBlock() {
           bold: targetBlock.bold,
           italic: targetBlock.italic
         };
+        documentStore.setPatch(targetBlock.pageNumber, targetBlock.id, {
+          newText: targetBlock.text,
+          originalText: targetBlock.originalText,
+          deltaY: targetBlock.deltaY,
+          currentHeight: targetBlock.currentHeight || targetBlock.originalHeight,
+          customFontSize: targetBlock.customFontSize,
+          customColor: targetBlock.customColor,
+          customWidth: targetBlock.customWidth,
+          bold: targetBlock.bold,
+          italic: targetBlock.italic,
+          isEdited: true
+        });
       } else {
         targetBlock.isEdited = false;
         delete editedBlocksState[targetBlock.id];
+        documentStore.deletePatch(targetBlock.pageNumber, targetBlock.id);
         targetBlock.text = targetBlock.originalText;
         targetBlock.deltaY = 0;
         targetBlock.currentHeight = targetBlock.originalHeight;
+        preEditSnapshot = null;
       }
     } else if (hasTextChanged || hasStyleOrPosChanged) {
+      if (preEditSnapshot) {
+        recordCommand('Edit paragraph text', preEditSnapshot, captureCurrentSnapshot());
+        preEditSnapshot = null;
+      }
       targetBlock.isEdited = true;
       editedBlocksState[targetBlock.id] = {
         newText: targetBlock.text,
@@ -1598,6 +2372,21 @@ function commitActiveBlock() {
         italic: targetBlock.italic,
         isMoved: targetBlock.isMoved
       };
+      documentStore.setPatch(targetBlock.pageNumber, targetBlock.id, {
+        newText: targetBlock.text,
+        originalText: targetBlock.originalText,
+        deltaY: targetBlock.deltaY,
+        currentHeight: targetBlock.currentHeight || targetBlock.originalHeight,
+        customX: targetBlock.customX,
+        customY: targetBlock.customY,
+        customFontSize: targetBlock.customFontSize,
+        customColor: targetBlock.customColor,
+        customWidth: targetBlock.customWidth,
+        bold: targetBlock.bold,
+        italic: targetBlock.italic,
+        isMoved: targetBlock.isMoved,
+        isEdited: true
+      });
       // Keep solid whiteout painted on canvas
       paintBlockOnCanvas(targetBlock, '#ffffff', 3);
     } else {
@@ -1605,9 +2394,11 @@ function commitActiveBlock() {
       targetBlock.text = targetBlock.originalText;
       targetBlock.isEdited = false;
       delete editedBlocksState[targetBlock.id];
+      documentStore.deletePatch(targetBlock.pageNumber, targetBlock.id);
       targetBlock.deltaY = 0;
       targetBlock.currentHeight = targetBlock.originalHeight;
       restoreBlockOnCanvas(targetBlock, 4);
+      preEditSnapshot = null;
     }
     updatePageVerticalReflow(targetBlock.pageNumber);
   }
@@ -1644,6 +2435,9 @@ function onParagraphBlur(block) {
     clearTimeout(blurTimer);
   }
   blurTimer = setTimeout(() => {
+    if (typeof document !== 'undefined' && document.activeElement?.closest?.('.block-floating-toolbar')) {
+      return;
+    }
     if (editingBlockId.value === block.id) {
       commitActiveBlock();
     }
@@ -1652,7 +2446,24 @@ function onParagraphBlur(block) {
 }
 
 function revertBlock(block) {
-  delete editedBlocksState[block.id];
+  if (!block) return;
+  const beforeSnapshot = captureCurrentSnapshot();
+  const pageIndex = block.pageNumber;
+  const blockId = block.id;
+
+  // Requirement 4: Delete patch from modular patch store
+  documentStore.deletePatch(pageIndex, blockId);
+  delete editedBlocksState[blockId];
+
+  // If this block had spilled from another page, return it back
+  if (block.originalPageNumber && block.originalPageNumber !== block.pageNumber) {
+    const origPage = block.originalPageNumber;
+    pageBlocksMap.value[block.pageNumber] = (pageBlocksMap.value[block.pageNumber] || []).filter(b => b.id !== block.id);
+    block.pageNumber = origPage;
+    if (!pageBlocksMap.value[origPage]) pageBlocksMap.value[origPage] = [];
+    pageBlocksMap.value[origPage].push(block);
+  }
+
   block.text = block.originalText;
   block.isEdited = false;
   block.isMoved = false;
@@ -1662,7 +2473,7 @@ function revertBlock(block) {
   block.width = block.originalWidth;
   block.customFontSize = null;
   block.fontSize = block.originalFontSize || block.fontSize;
-  block.viewportFontSize = (block.fontSize || 11) * (props.zoom || 1);
+  block.viewportFontSize = block.fontSize;
   block.customColor = null;
   block.color = block.originalColor || '#000000';
   block.bold = block.originalBold;
@@ -1684,6 +2495,39 @@ function revertBlock(block) {
   updatePageVerticalReflow(block.pageNumber);
   const edits = buildRedactionPayload();
   documentStore.setEdits(edits);
+  recordCommand('Revert paragraph block', beforeSnapshot, captureCurrentSnapshot());
+  saveCurrentSession();
+}
+
+function deleteBlock(block) {
+  if (!block) return;
+  const beforeSnapshot = captureCurrentSnapshot();
+  const pageIndex = block.pageNumber;
+  const blockId = block.id;
+
+  block.text = '';
+  activeBlockText.value = '';
+  block.isEdited = true;
+  block.deltaY = 0;
+  block.currentHeight = block.originalHeight;
+
+  documentStore.setPatch(pageIndex, blockId, {
+    newText: '',
+    originalText: block.originalText,
+    isEdited: true
+  });
+  editedBlocksState[blockId] = {
+    newText: '',
+    deltaY: 0,
+    currentHeight: block.originalHeight
+  };
+
+  paintBlockOnCanvas(block, '#ffffff');
+  updatePageVerticalReflow(pageIndex);
+
+  const edits = buildRedactionPayload();
+  documentStore.setEdits(edits);
+  recordCommand('Delete paragraph block', beforeSnapshot, captureCurrentSnapshot());
   saveCurrentSession();
 }
 
@@ -1691,9 +2535,30 @@ function revertBlock(block) {
  * Reverts all blocks across all pages back to their original text and coordinates.
  */
 function revertAll() {
+  const beforeSnapshot = captureCurrentSnapshot();
+  // Requirement 4: Clear all patches simultaneously
+  documentStore.clearAllPatches();
+
   for (const blockId of Object.keys(editedBlocksState)) {
     delete editedBlocksState[blockId];
   }
+
+  // Restore any spilled blocks back to their original pages
+  for (const [pageNumStr, blocks] of Object.entries(pageBlocksMap.value)) {
+    const pNum = Number(pageNumStr);
+    const staying = [];
+    for (const b of blocks) {
+      if (b.originalPageNumber && b.originalPageNumber !== pNum) {
+        b.pageNumber = b.originalPageNumber;
+        if (!pageBlocksMap.value[b.originalPageNumber]) pageBlocksMap.value[b.originalPageNumber] = [];
+        pageBlocksMap.value[b.originalPageNumber].push(b);
+      } else {
+        staying.push(b);
+      }
+    }
+    pageBlocksMap.value[pNum] = staying;
+  }
+
   for (const [pageNumStr, blocks] of Object.entries(pageBlocksMap.value)) {
     for (const block of blocks) {
       if (block.isEdited || block.isMoved) {
@@ -1706,7 +2571,7 @@ function revertAll() {
         block.width = block.originalWidth;
         block.customFontSize = null;
         block.fontSize = block.originalFontSize || block.fontSize;
-        block.viewportFontSize = (block.fontSize || 11) * (props.zoom || 1);
+        block.viewportFontSize = block.fontSize;
         block.customColor = null;
         block.color = block.originalColor || '#000000';
         block.bold = block.originalBold;
@@ -1732,6 +2597,8 @@ function revertAll() {
         if (vp) {
           canvas.style.width = `${Math.floor(vp.width)}px`;
           canvas.style.height = `${Math.floor(vp.height)}px`;
+          canvas.style.maxHeight = `${Math.floor(vp.height)}px`;
+          canvas.style.overflow = 'hidden';
         }
       }
       const ctx = canvas.getContext('2d');
@@ -1746,6 +2613,7 @@ function revertAll() {
   reflowVersion.value++;
   documentStore.edits = [];
   documentStore.activeBlockId = null;
+  recordCommand('Revert all edits', beforeSnapshot, captureCurrentSnapshot());
   saveCurrentSession();
 }
 
@@ -1762,15 +2630,101 @@ function buildRedactionPayload() {
     const scale = vp ? (vp.width / (vp.rawWidth || 595.28)) : props.zoom;
 
     for (const block of blocks) {
+      const origPage = block.originalPageNumber || block.originalPage || pageNumber;
+      const isMovedToAnotherPage = origPage !== pageNumber;
+      const patch = documentStore.getPatch ? (documentStore.getPatch(pageNumber, block.id) || documentStore.getPatch(origPage, block.id)) : null;
       const isActivelyEditing = editingBlockId.value === block.id;
-      const isMoved = Boolean(block.isMoved && (block.customX != null || block.customY != null));
-      const isEdited = isBlockEdited(block) || isActivelyEditing || isMoved;
+      const isMoved = Boolean((block.isMoved || patch?.isMoved) && (block.customX != null || block.customY != null || patch?.customX != null || patch?.customY != null));
+      const isEdited = isMovedToAnotherPage || Boolean(patch) || isBlockEdited(block) || isActivelyEditing || isMoved;
       if (!isEdited) continue;
 
-      const currentText = isActivelyEditing ? activeBlockText.value : block.text;
+      const currentText = isActivelyEditing
+        ? activeBlockText.value
+        : (patch?.newText !== undefined ? patch.newText : block.text);
+
+      const effectiveFontSize = patch?.customFontSize || patch?.fontSize || block.customFontSize || block.fontSize;
+      const effectiveColor = patch?.customColor || patch?.color || block.customColor || block.color;
+      const effectiveBold = patch?.bold !== undefined ? patch.bold : block.bold;
+      const effectiveItalic = patch?.italic !== undefined ? patch.italic : block.italic;
+
       const hasTextDiff = (currentText || '').trim() !== (block.originalText || '').trim();
-      const hasStyleDiff = Boolean(isMoved || block.customFontSize || block.customColor || block.customWidth || block.bold !== block.originalBold || block.italic !== block.originalItalic);
-      if (!hasTextDiff && !hasStyleDiff) continue;
+      const hasStyleDiff = Boolean(
+        isMoved ||
+        isMovedToAnotherPage ||
+        (effectiveFontSize && effectiveFontSize !== block.originalFontSize) ||
+        effectiveColor ||
+        block.customWidth ||
+        effectiveBold !== block.originalBold ||
+        effectiveItalic !== block.originalItalic
+      );
+      if (!hasTextDiff && !hasStyleDiff && !patch && !isMovedToAnotherPage) continue;
+
+      if (isMovedToAnotherPage) {
+        // 1. On origPage, erase the original text with solid whiteout
+        const rawOrigBbox = [
+          block.originalPdfX != null ? block.originalPdfX : block.originalX,
+          block.originalPdfY != null ? block.originalPdfY : block.originalY,
+          block.originalPdfWidth != null ? block.originalPdfWidth : block.originalWidth,
+          block.originalPdfHeight != null ? block.originalPdfHeight : block.originalHeight
+        ];
+        const effOrigBbox = getRotatedBbox(rawOrigBbox, origPage);
+        allEdits.push({
+          id: `redact-block-${block.id}-clear`,
+          lineId: `${block.id}-clear`,
+          pageNumber: origPage,
+          bbox: effOrigBbox,
+          originalBbox: effOrigBbox,
+          originalBoundingBox: effOrigBbox,
+          originalText: block.originalText,
+          newText: '',
+          style: {
+            fontSize: block.originalFontSize || block.fontSize || 12,
+            fontFamily: block.fontFamily || block.fontName || 'Helvetica',
+            bold: false,
+            italic: false,
+            color: '#000000'
+          },
+          backgroundColor: '#FFFFFF',
+          transparentBackground: false,
+          isBlankLine: false,
+          pageRotation: userRotations.value[origPage] || 0
+        });
+
+        // 2. On destination pageNumber, place the new text at the new Y coordinate
+        const targetX = block.customX != null ? block.customX : (patch?.customX != null ? patch.customX : block.originalX);
+        const targetY = block.y;
+        const rawNewBbox = [
+          targetX,
+          targetY,
+          block.originalPdfWidth || block.originalWidth || block.width,
+          block.currentHeight || block.originalPdfHeight || block.originalHeight || block.height
+        ];
+        const effNewBbox = getRotatedBbox(rawNewBbox, pageNumber);
+        allEdits.push({
+          id: `redact-block-${block.id}`,
+          lineId: block.id,
+          pageNumber,
+          bbox: effNewBbox,
+          originalBbox: effNewBbox,
+          originalBoundingBox: effNewBbox,
+          isMoved: true,
+          originalText: '',
+          newText: currentText,
+          style: {
+            fontSize: effectiveFontSize,
+            fontFamily: patch?.fontFamily || block.fontFamily || block.fontName || 'Helvetica',
+            bold: Boolean(effectiveBold),
+            italic: Boolean(effectiveItalic),
+            color: effectiveColor ? (effectiveColor.startsWith('#') ? effectiveColor : getBlockColorHex(block)) : getBlockColorHex(block)
+          },
+          backgroundColor: '#FFFFFF',
+          transparentBackground: true,
+          isBlankLine: false,
+          pageRotation: pageRot,
+          reflowed: true
+        });
+        continue;
+      }
 
       const isFullyRedacted = (!currentText || currentText.trim().length === 0);
       const isPiiBlock = hasPII(block.originalText) || autoRedactedBlockIds.has(block.id);
@@ -1780,10 +2734,10 @@ function buildRedactionPayload() {
 
       if (isFullyRedacted && isPiiBlock) {
         const exp = getLeftExpandedBlockBox(block, blocks);
-        const expPdfX = exp.x / scale;
-        const expPdfWidth = exp.width / scale;
-        const expPdfY = exp.y / scale;
-        const expPdfHeight = exp.height / scale;
+        const expPdfX = exp.x;
+        const expPdfWidth = exp.width;
+        const expPdfY = exp.y;
+        const expPdfHeight = exp.height;
 
         const rawOriginalBbox = [expPdfX, expPdfY, expPdfWidth, expPdfHeight];
         effectiveOriginalBbox = getRotatedBbox(rawOriginalBbox, pageNumber);
@@ -1792,21 +2746,21 @@ function buildRedactionPayload() {
         effectiveNewBbox = getRotatedBbox(rawNewBbox, pageNumber);
       } else {
         const rawOriginalBbox = [
-          block.originalPdfX,
-          block.originalPdfY,
-          block.originalPdfWidth,
-          block.originalPdfHeight
+          block.originalPdfX != null ? block.originalPdfX : block.originalX,
+          block.originalPdfY != null ? block.originalPdfY : block.originalY,
+          block.originalPdfWidth != null ? block.originalPdfWidth : block.originalWidth,
+          block.originalPdfHeight != null ? block.originalPdfHeight : block.originalHeight
         ];
         effectiveOriginalBbox = getRotatedBbox(rawOriginalBbox, pageNumber);
 
-        const targetX = block.customX != null ? block.customX : block.originalX;
-        const targetY = block.customY != null ? block.customY : block.y;
+        const targetX = block.customX != null ? block.customX : (patch?.customX != null ? patch.customX : block.originalX);
+        const targetY = block.customY != null ? block.customY : (patch?.customY != null ? patch.customY : block.y);
 
         const rawNewBbox = [
-          targetX / scale,
-          targetY / scale,
-          block.originalPdfWidth,
-          block.originalPdfHeight
+          targetX,
+          targetY,
+          block.originalPdfWidth || block.originalWidth || block.width,
+          block.originalPdfHeight || block.originalHeight || block.height
         ];
         effectiveNewBbox = getRotatedBbox(rawNewBbox, pageNumber);
       }
@@ -1822,11 +2776,11 @@ function buildRedactionPayload() {
         originalText: block.originalText,
         newText: currentText,
         style: {
-          fontSize: block.customFontSize || block.fontSize,
-          fontFamily: block.fontFamily || block.fontName || 'Helvetica',
-          bold: Boolean(block.bold),
-          italic: Boolean(block.italic),
-          color: getBlockColorHex(block)
+          fontSize: effectiveFontSize,
+          fontFamily: patch?.fontFamily || block.fontFamily || block.fontName || 'Helvetica',
+          bold: Boolean(effectiveBold),
+          italic: Boolean(effectiveItalic),
+          color: effectiveColor ? (effectiveColor.startsWith('#') ? effectiveColor : getBlockColorHex(block)) : getBlockColorHex(block)
         },
         backgroundColor: '#FFFFFF',
         transparentBackground: Boolean(block.transparentBackground || block.isBlankLine),
@@ -1838,6 +2792,48 @@ function buildRedactionPayload() {
           return getRotatedBbox(rawBox, pageNumber);
         }) : undefined
       });
+    }
+  }
+
+  // Ensure all edits have pageIndex and isNewPage flags
+  for (const edit of allEdits) {
+    if (edit.pageIndex == null) {
+      edit.pageIndex = edit.pageNumber - 1;
+    }
+    if (edit.isNewPage == null) {
+      edit.isNewPage = Boolean(
+        edit.pageNumber > (currentPdfDoc ? currentPdfDoc.numPages : 1) ||
+        documentStore.documentModel?.pages?.[edit.pageNumber - 1]?.isBlankPage
+      );
+    }
+  }
+
+  // Flag any newly created pages: { pageIndex, isNewPage: true, width, height }
+  for (let p = 1; p <= numPages.value; p++) {
+    const isNew = Boolean(
+      p > (currentPdfDoc ? currentPdfDoc.numPages : 1) ||
+      documentStore.documentModel?.pages?.[p - 1]?.isBlankPage
+    );
+    if (isNew) {
+      const hasPageInit = allEdits.some(e => e.pageNumber === p && e.isNewPage);
+      if (!hasPageInit) {
+        const dims = getPageDimensions(p);
+        allEdits.push({
+          id: `page-init-${p}`,
+          lineId: `page-init-${p}`,
+          pageNumber: p,
+          pageIndex: p - 1,
+          isNewPage: true,
+          width: dims.width,
+          height: dims.height,
+          bbox: [0, 0, dims.width, dims.height],
+          originalBbox: [0, 0, dims.width, dims.height],
+          newText: '',
+          transparentBackground: true,
+          backgroundColor: '#FFFFFF',
+          isBlankLine: false
+        });
+      }
     }
   }
 
@@ -1940,8 +2936,6 @@ function scheduleVisiblePagesRender() {
 }
 
 async function processVisiblePagesRender() {
-  if (!currentPdfDoc) return;
-
   const pagesToRender = [];
   for (let p = 1; p <= numPages.value; p++) {
     if (isPageVisible(p) && !isPageCanvasRendered.value[p]) {
@@ -1988,6 +2982,9 @@ async function renderAllPages(isRestored = false) {
 
     currentPdfDoc = await loadingTask.promise;
     numPages.value = currentPdfDoc.numPages;
+    if (documentStore.documentModel && Array.isArray(documentStore.documentModel.pages)) {
+      documentStore.documentModel.pages = documentStore.documentModel.pages.slice(0, currentPdfDoc.numPages);
+    }
 
     await prefetchPageViewports();
 
@@ -1997,11 +2994,14 @@ async function renderAllPages(isRestored = false) {
         if (isRestored && pageBlocksMap.value[p] && pageBlocksMap.value[p].length > 0) {
           continue;
         }
+        if (p > currentPdfDoc.numPages) {
+          continue;
+        }
         const page = await currentPdfDoc.getPage(p);
         const rot = userRotations.value[p] || 0;
-        const vp = page.getViewport({ scale: props.zoom, rotation: rot });
+        const baseVp = page.getViewport({ scale: 1.0, rotation: rot });
         const textContent = await page.getTextContent();
-        extractParagraphBlocks(p, textContent, vp, null, isRestored);
+        extractParagraphBlocks(p, textContent, baseVp, null, isRestored);
       } catch (err) {
         console.warn(`Initial block extraction for page ${p} failed:`, err);
       }
@@ -2030,7 +3030,7 @@ async function rotatePage(pageNumber, delta = 90) {
   const newRot = ((currentRot + delta) % 360 + 360) % 360;
   userRotations.value[pageNumber] = newRot;
 
-  if (currentPdfDoc) {
+  if (currentPdfDoc && pageNumber <= currentPdfDoc.numPages) {
     try {
       const page = await currentPdfDoc.getPage(pageNumber);
       const vp = page.getViewport({ scale: props.zoom, rotation: newRot });
@@ -2048,6 +3048,7 @@ async function rotatePage(pageNumber, delta = 90) {
     }
   }
 
+  delete pageBlocksMap.value[pageNumber];
   isPageCanvasRendered.value[pageNumber] = false;
   if (isPageVisible(pageNumber)) {
     await renderPage(pageNumber);
@@ -2055,7 +3056,56 @@ async function rotatePage(pageNumber, delta = 90) {
   saveCurrentSession();
 }
 
+function renderBlankPage(pageNumber) {
+  const canvas = canvasRefs.value[pageNumber];
+  if (!canvas) return;
+
+  const dims = getPageDimensions(pageNumber);
+  const currentScale = props.zoom || 1.0;
+  const dpr = window.devicePixelRatio || 1;
+
+  pageViewports.value[pageNumber] = {
+    width: dims.width * currentScale,
+    height: dims.height * currentScale,
+    rotation: 0,
+    rawWidth: dims.width,
+    rawHeight: dims.height
+  };
+
+  canvas.width = Math.floor(dims.width * currentScale * dpr);
+  canvas.height = Math.floor(dims.height * currentScale * dpr);
+  canvas.style.width = `${Math.floor(dims.width * currentScale)}px`;
+  canvas.style.height = `${Math.floor(dims.height * currentScale)}px`;
+  canvas.style.maxHeight = `${Math.floor(dims.height * currentScale)}px`;
+  canvas.style.overflow = 'hidden';
+
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const pristineClone = document.createElement('canvas');
+  pristineClone.width = canvas.width;
+  pristineClone.height = canvas.height;
+  const pCtx = pristineClone.getContext('2d');
+  pCtx.fillStyle = '#ffffff';
+  pCtx.fillRect(0, 0, pristineClone.width, pristineClone.height);
+  pristineCanvasMap[pageNumber] = pristineClone;
+
+  isPageCanvasRendered.value[pageNumber] = true;
+  if (!pageBlocksMap.value[pageNumber]) {
+    pageBlocksMap.value[pageNumber] = [];
+  }
+}
+
 async function renderPage(pageNumber) {
+  if (!isPageVisible(pageNumber)) return;
+
+  if (currentPdfDoc && pageNumber > currentPdfDoc.numPages) {
+    renderBlankPage(pageNumber);
+    return;
+  }
+
   if (!currentPdfDoc) return;
   if (!isPageVisible(pageNumber)) return;
 
@@ -2099,6 +3149,8 @@ async function renderPage(pageNumber) {
     canvas.height = Math.floor(viewport.height * dpr);
     canvas.style.width  = `${Math.floor(viewport.width)}px`;
     canvas.style.height = `${Math.floor(viewport.height)}px`;
+    canvas.style.maxHeight = `${Math.floor(viewport.height)}px`;
+    canvas.style.overflow = 'hidden';
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
@@ -2127,12 +3179,15 @@ async function renderPage(pageNumber) {
     pCtx.drawImage(canvas, 0, 0);
     pristineCanvasMap[pageNumber] = pristineClone;
 
-    // Extract text content and group into WPS Office-Style Paragraph Blocks
-    const textContent = await page.getTextContent();
-    const isRestored = Boolean(documentStore.isRestoredSession);
-    extractParagraphBlocks(pageNumber, textContent, viewport, pristineClone, isRestored);
-    scanAndAppendCanvasBlankLines(pageNumber, pristineClone, viewport);
-    updatePageVerticalReflow(pageNumber);
+    // Extract text content and group into WPS Office-Style Paragraph Blocks if not already cached
+    if (!pageBlocksMap.value[pageNumber] || pageBlocksMap.value[pageNumber].length === 0) {
+      const baseViewport = page.getViewport({ scale: 1.0, rotation: pageUserRotation });
+      const textContent = await page.getTextContent();
+      const isRestored = Boolean(documentStore.isRestoredSession);
+      extractParagraphBlocks(pageNumber, textContent, baseViewport, pristineClone, isRestored);
+      scanAndAppendCanvasBlankLines(pageNumber, pristineClone, baseViewport);
+      updatePageVerticalReflow(pageNumber);
+    }
 
     // Paint whiteout on canvas for any already edited or actively editing blocks on this page
     const pBlocks = pageBlocksMap.value[pageNumber] || [];
@@ -2588,6 +3643,67 @@ function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanva
         block.x = state.customX;
         block.y = state.customY;
       }
+    } else if (!autoRedactedBlockIds.has(block.id) && !isRestored) {
+      if (!block.isBlankLine && hasPII(block.text)) {
+        const cleanedText = redactPIIFromText(block.text);
+        if (cleanedText !== block.text) {
+          autoRedactedBlockIds.add(block.id);
+          block.text = cleanedText;
+          block.isEdited = true;
+          editedBlocksState[block.id] = {
+            newText: cleanedText,
+            deltaY: 0,
+            currentHeight: block.currentHeight || block.originalHeight
+          };
+          documentStore.setPatch(block.pageNumber, block.id, {
+            newText: cleanedText,
+            originalText: block.originalText,
+            isEdited: true
+          });
+        }
+      }
+    }
+  }
+
+  // 5. Scan for tiny sibling icon boxes immediately to the left of redacted PII blocks
+  if (!isRestored) {
+    for (const piiBox of blocks) {
+      if (!piiBox.isEdited || piiBox.isBlankLine) continue;
+      const isPiiRedacted = hasPII(piiBox.originalText) || (piiBox.text === '' && autoRedactedBlockIds.has(piiBox.id));
+      if (!isPiiRedacted) continue;
+
+      for (const sibling of blocks) {
+        if (sibling.id === piiBox.id || sibling.isBlankLine) continue;
+        const sibW = sibling.originalWidth || sibling.width;
+        const isTiny = sibW < (25 * viewport.scale);
+        if (!isTiny) continue;
+
+        const sameBaseline = Math.abs(sibling.y - piiBox.y) < (6 * viewport.scale);
+        if (!sameBaseline) continue;
+
+        const sibRight = sibling.x + sibW;
+        const gap = piiBox.x - sibRight;
+        const isImmediatelyLeft = sibling.x < piiBox.x && gap >= -2 && gap < (18 * viewport.scale);
+        if (!isImmediatelyLeft) continue;
+
+        const textTrim = (sibling.text || '').trim();
+        const isIconGlyph = textTrim.length <= 2 || !/[a-zA-Z0-9]/.test(textTrim) || /^[\u2600-\u27BF\uE000-\uF8FF\uD83C-\uDBFF\uDC00-\uDFFF✉☎✆📞📧📱📍\s]+$/.test(textTrim);
+        if (isIconGlyph) {
+          sibling.text = '';
+          sibling.isEdited = true;
+          autoRedactedBlockIds.add(sibling.id);
+          editedBlocksState[sibling.id] = {
+            newText: '',
+            deltaY: 0,
+            currentHeight: sibling.originalHeight
+          };
+          documentStore.setPatch(sibling.pageNumber, sibling.id, {
+            newText: '',
+            originalText: sibling.originalText,
+            isEdited: true
+          });
+        }
+      }
     }
   }
 
@@ -2600,6 +3716,11 @@ function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanva
  */
 function scanAndAppendCanvasBlankLines(pageNumber, pristineCanvas, viewport) {
   if (!pristineCanvas) return;
+  // Guard: Dynamic flow pages must never be scanned for blank lines
+  if (currentPdfDoc && pageNumber > currentPdfDoc.numPages) return;
+  const pModel = documentStore.documentModel?.pages?.[pageNumber - 1];
+  if (pModel?.isBlankPage) return;
+
   const pCtx = pristineCanvas.getContext('2d');
   if (!pCtx) return;
 
@@ -2684,19 +3805,20 @@ function scanAndAppendCanvasBlankLines(pageNumber, pristineCanvas, viewport) {
     }
   }
 
+  const canvasScale = (props.zoom || 1.0) * dpr;
   let appendedCount = 0;
   for (const line of mergedLines) {
-    const lineX = line.x1 / dpr;
-    const lineWidth = (line.x2 - line.x1) / dpr;
-    const lineY = line.y / dpr;
+    const lineX = line.x1 / canvasScale;
+    const lineWidth = (line.x2 - line.x1) / canvasScale;
+    const lineY = line.y / canvasScale;
 
     // Check if an existing block already covers this line
     const isCovered = existingBlocks.some(b => {
       const bBottom = b.y + b.height;
       const bTop = b.y;
-      const yOverlap = Math.abs(bBottom - lineY) <= (10 * viewport.scale) ||
+      const yOverlap = Math.abs(bBottom - lineY) <= 10 ||
                        (lineY >= bTop - 4 && lineY <= bBottom + 4);
-      const xOverlap = Math.max(b.x, lineX) < (Math.min(b.x + b.width, lineX + lineWidth) - (15 * viewport.scale));
+      const xOverlap = Math.max(b.x, lineX) < (Math.min(b.x + b.width, lineX + lineWidth) - 15);
       return yOverlap && xOverlap;
     });
 
@@ -2705,7 +3827,7 @@ function scanAndAppendCanvasBlankLines(pageNumber, pristineCanvas, viewport) {
     // Check if text sits directly above this line (underline under existing text)
     const hasTextImmediatelyAbove = existingBlocks.some(b => {
       const bBottom = b.y + b.height;
-      const isDirectlyAbove = (lineY - bBottom) >= 0 && (lineY - bBottom) <= (6 * viewport.scale);
+      const isDirectlyAbove = (lineY - bBottom) >= 0 && (lineY - bBottom) <= 6;
       const xOverlap = Math.max(b.x, lineX) < Math.min(b.x + b.width, lineX + lineWidth);
       return isDirectlyAbove && xOverlap && !b.isBlankLine;
     });
@@ -2713,9 +3835,8 @@ function scanAndAppendCanvasBlankLines(pageNumber, pristineCanvas, viewport) {
     if (hasTextImmediatelyAbove) continue;
 
     const fontSize = 11.0;
-    const viewportFontSize = fontSize * viewport.scale;
-    const blockHeight = Math.max(viewportFontSize * 1.25, 14);
-    const blockY = lineY - blockHeight + (1.5 * viewport.scale);
+    const blockHeight = Math.max(fontSize * 1.25, 14);
+    const blockY = lineY - blockHeight + 1.5;
     const blockIndex = existingBlocks.length + appendedCount;
     const blockId = `p${pageNumber}-vblank-${blockIndex}`;
 
@@ -2737,16 +3858,16 @@ function scanAndAppendCanvasBlankLines(pageNumber, pristineCanvas, viewport) {
       originalY: blockY,
       originalWidth: lineWidth,
       originalHeight: blockHeight,
-      pdfX: lineX / viewport.scale,
-      pdfY: blockY / viewport.scale,
-      pdfWidth: lineWidth / viewport.scale,
-      pdfHeight: blockHeight / viewport.scale,
-      originalPdfX: lineX / viewport.scale,
-      originalPdfY: blockY / viewport.scale,
-      originalPdfWidth: lineWidth / viewport.scale,
-      originalPdfHeight: blockHeight / viewport.scale,
+      pdfX: lineX,
+      pdfY: blockY,
+      pdfWidth: lineWidth,
+      pdfHeight: blockHeight,
+      originalPdfX: lineX,
+      originalPdfY: blockY,
+      originalPdfWidth: lineWidth,
+      originalPdfHeight: blockHeight,
       fontSize: fontSize,
-      viewportFontSize: viewportFontSize,
+      viewportFontSize: fontSize,
       fontName: 'Helvetica',
       bold: false,
       italic: false,
@@ -3003,31 +4124,67 @@ onMounted(async () => {
   if (typeof window !== 'undefined') {
     window.__buildRedactionPayload = buildRedactionPayload;
     window.__revertAll = revertAll;
+    window.__revertBlock = revertBlock;
+    window.__deleteBlock = deleteBlock;
+    window.__checkBlockCollision = checkBlockCollision;
+    window.__autoShrinkToFit = autoShrinkToFit;
+    window.__pageBlocksMap = pageBlocksMap;
     window.__documentStore = documentStore;
     window.__saveCurrentSession = saveCurrentSession;
     window.__sessionStorageService = sessionStorageService;
     window.__purgeEditorState = purgeEditorState;
+    window.__commitActiveBlock = commitActiveBlock;
+    window.__buildRedactionPayload = buildRedactionPayload;
+    window.__documentStore = documentStore;
+    window.__revertAll = revertAll;
     window.addEventListener('mousedown', onBackgroundMouseDown);
+    window.addEventListener('keydown', handleEditorKeydown);
+    window.__executeUndo = executeUndo;
+    window.__executeRedo = executeRedo;
   }
 });
 
 onBeforeUnmount(() => {
   if (typeof window !== 'undefined') {
     window.removeEventListener('mousedown', onBackgroundMouseDown);
+    window.removeEventListener('keydown', handleEditorKeydown);
+    delete window.__executeUndo;
+    delete window.__executeRedo;
+    delete window.__commitActiveBlock;
+    delete window.__buildRedactionPayload;
+    delete window.__documentStore;
+    delete window.__revertAll;
+    delete window.__revertBlock;
+    delete window.__deleteBlock;
+    delete window.__checkBlockCollision;
+    delete window.__autoShrinkToFit;
+    delete window.__pageBlocksMap;
+    delete window.__saveCurrentSession;
+    delete window.__sessionStorageService;
+    delete window.__purgeEditorState;
   }
   if (pageObserver) {
     pageObserver.disconnect();
     pageObserver = null;
   }
+  if (sessionSaveDebounceTimer) {
+    clearTimeout(sessionSaveDebounceTimer);
+    sessionSaveDebounceTimer = null;
+  }
   if (renderDebounceTimer) {
     clearTimeout(renderDebounceTimer);
     renderDebounceTimer = null;
+  }
+  if (blurTimer) {
+    clearTimeout(blurTimer);
+    blurTimer = null;
   }
   for (const p in renderTasks) {
     try {
       renderTasks[p].cancel();
     } catch {}
   }
+  purgeEditorState();
 });
 
 /**
@@ -3101,6 +4258,10 @@ defineExpose({
   commitActiveBlock,
   commitSavedBaseline,
   purgeEditorState,
+  executeUndo,
+  executeRedo,
+  captureCurrentSnapshot,
+  applyHistorySnapshot,
   getUserRotations: () => ({ ...userRotations.value })
 });
 </script>
@@ -3121,6 +4282,7 @@ defineExpose({
   flex-direction: column;
   align-items: center;
   gap: 36px;
+  min-width: min-content;
 }
 
 .pdf-page-card {
@@ -3204,11 +4366,12 @@ defineExpose({
   background: #ffffff;
   box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
   border-radius: 4px;
-  overflow: hidden;
+  overflow: hidden !important;
 }
 
 .pdf-page-canvas {
   display: block;
+  overflow: hidden !important;
 }
 
 /* Dedicated Whiteout Mask Layer */
@@ -3218,6 +4381,7 @@ defineExpose({
   left: 0;
   pointer-events: none;
   z-index: 5;
+  overflow: hidden !important;
 }
 
 .whiteout-mask-box {
@@ -3234,6 +4398,7 @@ defineExpose({
   left: 0;
   pointer-events: auto;
   z-index: 10;
+  overflow: hidden !important;
 }
 
 /* WPS Office-Style Live Paragraph Block */
@@ -3667,5 +4832,70 @@ defineExpose({
 .block-resize-handle:hover {
   background-color: #1d4ed8;
   transform: scale(1.2);
+}
+
+/* Collision Warning Border and Badges (Objective 3) */
+.wps-paragraph-block.has-collision {
+  border: 1.5px dashed #f59e0b !important;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.45) !important;
+}
+
+.toolbar-collision-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid #f59e0b;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fbbf24;
+  white-space: nowrap;
+}
+
+.toolbar-collision-badge .text-amber {
+  color: #f59e0b;
+  width: 13px;
+  height: 13px;
+}
+
+.btn-auto-shrink {
+  background-color: #1e293b;
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 6px;
+}
+
+.btn-auto-shrink:hover {
+  background-color: #0284c7;
+  color: #ffffff;
+}
+
+.btn-floating-revert {
+  color: #f87171;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.btn-floating-revert:hover:not(:disabled) {
+  background-color: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.btn-floating-revert:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-floating-delete {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.btn-floating-delete:hover {
+  background-color: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
 }
 </style>

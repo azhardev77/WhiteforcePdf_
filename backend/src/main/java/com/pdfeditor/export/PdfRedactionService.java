@@ -59,6 +59,12 @@ public class PdfRedactionService {
                 editsByPage.computeIfAbsent(edit.getPageNumber(), k -> new ArrayList<>()).add(edit);
             }
 
+            int maxRequestedPage = editsByPage.keySet().stream().mapToInt(Integer::intValue).max().orElse(doc.getNumberOfPages());
+            while (doc.getNumberOfPages() < maxRequestedPage) {
+                PDPage lastPage = doc.getPage(doc.getNumberOfPages() - 1);
+                PDRectangle templateBox = lastPage.getCropBox() != null ? lastPage.getCropBox() : lastPage.getMediaBox();
+                doc.addPage(new PDPage(templateBox != null ? templateBox : PDRectangle.A4));
+            }
             int numPages = doc.getNumberOfPages();
             for (Map.Entry<Integer, List<TextRedactionEdit>> entry : editsByPage.entrySet()) {
                 int pageNumber = entry.getKey();
@@ -193,8 +199,12 @@ public class PdfRedactionService {
                     }
 
                     // Step 2: Agar naya text zyada lines le raha hai, toh iske neeche ke poore page
-                    // content ko shift karein
-                    if (extraHeightNeeded > 1.0f) {
+                    // content ko shift karein (sirf un-paginated legacy edits ke liye;
+                    // frontend cascading reflow mein downstream blocks already have explicit target coordinates)
+                    boolean isFrontendManagedReflow = pageEdits.stream().anyMatch(e -> e.isMoved() || e.isReflowed() || e.isNewPage())
+                            || edits.stream().anyMatch(e -> e.isMoved() || e.isReflowed() || e.isNewPage() || e.getPageNumber() > 1);
+
+                    if (!isFrontendManagedReflow && extraHeightNeeded > 1.0f) {
                         float splitFromTopY = boxY + effectiveBoxH + 1.0f;
                         shiftPageContentBelow(doc, pageNumber - 1, page, splitFromTopY, extraHeightNeeded,
                                 parseColor(edit.getBackgroundColor(), Color.WHITE));

@@ -78,6 +78,32 @@ function openDatabase() {
   });
 }
 
+export function serializeBlockPatches(patches) {
+  if (!patches) return [];
+  if (patches instanceof Map) {
+    return Array.from(patches.entries());
+  }
+  if (Array.isArray(patches)) {
+    return patches;
+  }
+  if (typeof patches === 'object') {
+    return Object.entries(patches);
+  }
+  return [];
+}
+
+export function deserializeBlockPatches(entries) {
+  if (!entries) return new Map();
+  if (entries instanceof Map) return entries;
+  if (Array.isArray(entries)) {
+    return new Map(entries);
+  }
+  if (typeof entries === 'object') {
+    return new Map(Object.entries(entries));
+  }
+  return new Map();
+}
+
 function safeClone(obj, fallback = null) {
   if (!obj) return fallback;
   try {
@@ -126,12 +152,16 @@ export async function saveSession(sessionData) {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
 
+        const rawPatches = sessionData.blockPatches;
+        const serializedPatches = serializeBlockPatches(rawPatches);
+
         const record = {
           fileKey,
           pdfBytes,
           fileName: String(sessionData.fileName || 'document.pdf'),
           documentModel: safeClone(sessionData.documentModel, null),
           edits: safeClone(sessionData.edits, []),
+          blockPatches: safeClone(serializedPatches, []),
           editedBlocksState: safeClone(sessionData.editedBlocksState, {}),
           textBlocks: safeClone(sessionData.textBlocks, []),
           pageBlocksMap: safeClone(sessionData.pageBlocksMap, null),
@@ -289,6 +319,57 @@ export async function clearSession(fileKey = null) {
 }
 
 /**
+ * Hard purges the active document session from IndexedDB and storage.
+ * Synchronously removes active document pointer and deletes the document entry.
+ *
+ * @param {string} [fileKey] - Specific file key to clear
+ * @returns {Promise<boolean>}
+ */
+export async function clearActiveDocument(fileKey = null) {
+  try {
+    if (typeof window !== 'undefined') {
+      try {
+        if (window.sessionStorage) window.sessionStorage.clear();
+        if (window.localStorage) {
+          window.localStorage.removeItem('pdf_editor_active_doc');
+          window.localStorage.removeItem('pdf_editor_session');
+        }
+      } catch {}
+    }
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+
+      if (fileKey) {
+        store.delete(fileKey);
+      }
+      const pointerReq = store.get(ACTIVE_DOC_POINTER);
+      pointerReq.onsuccess = () => {
+        const activeKey = pointerReq.result;
+        if (activeKey) {
+          store.delete(activeKey);
+        }
+        store.delete(ACTIVE_DOC_POINTER);
+        store.delete(SESSION_KEY);
+      };
+
+      tx.oncomplete = () => {
+        db.close();
+        resolve(true);
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error || new Error('Failed to clear active document.'));
+      };
+    });
+  } catch (err) {
+    console.warn('[IndexedDB] Failed to clear active document:', err);
+    return false;
+  }
+}
+
+/**
  * Checks whether an active session with valid PDF bytes exists.
  *
  * @param {string} [fileKey]
@@ -309,5 +390,6 @@ export default {
   loadSession,
   clearDraftCache,
   clearSession,
+  clearActiveDocument,
   hasSession
 };

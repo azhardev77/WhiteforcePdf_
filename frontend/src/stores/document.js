@@ -13,6 +13,7 @@ export const useDocumentStore = defineStore('document', {
     fileHandle: null,      // FileSystemFileHandle when opened via File System Access API
     fileKey: null,         // Unique document hash/identifier for scoped storage
     edits: [],             // Array of TextRedactionEdit
+    blockPatches: new Map(), // Map<string, BlockEditPatch> where key is `${pageIndex}_${blockId}`
     activeBlockId: null,
     zoom: 1.25,
     isExtracting: false,
@@ -23,10 +24,14 @@ export const useDocumentStore = defineStore('document', {
     errorMessage: null,
     fileName: '',
     restoredSession: null,
-    isRestoredSession: false
+    isRestoredSession: false,
+    history: [],           // Array<HistorySnapshot>, max 30
+    future: []             // Array<HistorySnapshot> for redo
   }),
 
   getters: {
+    canUndo: (state) => (state.history?.length || 0) > 0,
+    canRedo: (state) => (state.future?.length || 0) > 0,
     hasDocument: (state) => {
       return Boolean(
         state.documentModel &&
@@ -41,12 +46,189 @@ export const useDocumentStore = defineStore('document', {
     totalPages: (state) => {
       return state.documentModel?.pages || [];
     },
+    paragraphEditsCount: (state) => {
+      if (!state.blockPatches) return 0;
+      let count = 0;
+      for (const [key, patch] of state.blockPatches.entries()) {
+        if (patch && key.includes('_')) {
+          count++;
+        }
+      }
+      return count;
+    },
     editsCount: (state) => {
-      return state.edits.length;
+      let patchCount = 0;
+      if (state.blockPatches) {
+        for (const [key, patch] of state.blockPatches.entries()) {
+          if (patch && key.includes('_')) {
+            patchCount++;
+          }
+        }
+      }
+      return patchCount > 0 ? patchCount : state.edits.length;
     }
   },
 
   actions: {
+    /**
+     * Constructs the canonical key for a block patch: `${pageIndex}_${blockId}`.
+     */
+    getPatchKey(pageIndex, blockId) {
+      return `${pageIndex}_${blockId}`;
+    },
+
+    /**
+     * Retrieves an individual block patch by pageIndex and blockId.
+     */
+    getPatch(pageIndex, blockId) {
+      if (!this.blockPatches) return null;
+      const key = this.getPatchKey(pageIndex, blockId);
+      return this.blockPatches.get(key) || this.blockPatches.get(`${pageIndex}${blockId}`) || null;
+    },
+
+    /**
+     * Sets or updates an individual BlockEditPatch in the modular patch store.
+     */
+    setPatch(pageIndex, blockId, patchData) {
+      if (!this.blockPatches) {
+        this.blockPatches = new Map();
+      }
+      const key = this.getPatchKey(pageIndex, blockId);
+      const existing = this.blockPatches.get(key) || {};
+      const updatedPatch = {
+        ...existing,
+        ...patchData,
+        pageIndex,
+        blockId,
+        timestamp: Date.now()
+      };
+      this.blockPatches.set(key, updatedPatch);
+      // Also set secondary key for flexible lookup
+      this.blockPatches.set(`${pageIndex}${blockId}`, updatedPatch);
+    },
+
+    /**
+     * Deletes a specific block edit patch (per-paragraph revert).
+     */
+    deletePatch(pageIndex, blockId) {
+      if (!this.blockPatches) return;
+      const key = this.getPatchKey(pageIndex, blockId);
+      this.blockPatches.delete(key);
+      this.blockPatches.delete(`${pageIndex}${blockId}`);
+    },
+
+    /**
+     * Clears all patches simultaneously (global Revert All).
+     */
+    clearAllPatches(recordHistory = false) {
+      if (recordHistory && this.blockPatches && this.blockPatches.size > 0) {
+        this.pushHistorySnapshot();
+      }
+      if (this.blockPatches) {
+        this.blockPatches.clear();
+      }
+      this.edits = [];
+      this.activeBlockId = null;
+    },
+
+    /**
+     * Pushes a history snapshot for Undo/Redo tracking.
+     */
+    pushHistorySnapshot(customSnapshot = null) {
+      if (!this.history) this.history = [];
+      const snapshot = customSnapshot || {
+        blockPatches: Array.from((this.blockPatches || new Map()).entries()),
+        edits: Array.isArray(this.edits) ? JSON.parse(JSON.stringify(this.edits)) : [],
+        documentPages: this.documentModel?.pages ? JSON.parse(JSON.stringify(this.documentModel.pages)) : [],
+        timestamp: Date.now()
+      };
+      this.history.push(snapshot);
+      if (this.history.length > 30) {
+        this.history.shift();
+      }
+      this.future = [];
+    },
+
+    /**
+     * Undoes the last edit action.
+     */
+    undo(customCurrentSnapshot = null) {
+      if (!this.history || this.history.length === 0) return null;
+      if (!this.future) this.future = [];
+      const currentSnapshot = customCurrentSnapshot || {
+        blockPatches: Array.from((this.blockPatches || new Map()).entries()),
+        edits: Array.isArray(this.edits) ? JSON.parse(JSON.stringify(this.edits)) : [],
+        documentPages: this.documentModel?.pages ? JSON.parse(JSON.stringify(this.documentModel.pages)) : [],
+        timestamp: Date.now()
+      };
+      this.future.push(currentSnapshot);
+
+      const prevSnapshot = this.history.pop();
+      this.applySnapshot(prevSnapshot);
+      return prevSnapshot;
+    },
+
+    /**
+     * Redoes the last undone action.
+     */
+    redo(customCurrentSnapshot = null) {
+      if (!this.future || this.future.length === 0) return null;
+      if (!this.history) this.history = [];
+      const currentSnapshot = customCurrentSnapshot || {
+        blockPatches: Array.from((this.blockPatches || new Map()).entries()),
+        edits: Array.isArray(this.edits) ? JSON.parse(JSON.stringify(this.edits)) : [],
+        documentPages: this.documentModel?.pages ? JSON.parse(JSON.stringify(this.documentModel.pages)) : [],
+        timestamp: Date.now()
+      };
+      this.history.push(currentSnapshot);
+
+      const nextSnapshot = this.future.pop();
+      this.applySnapshot(nextSnapshot);
+      return nextSnapshot;
+    },
+
+    applySnapshot(snapshot) {
+      if (!snapshot) return;
+      this.blockPatches = new Map(snapshot.blockPatches || []);
+      this.edits = Array.isArray(snapshot.edits) ? [...snapshot.edits] : [];
+      if (snapshot.documentPages && Array.isArray(snapshot.documentPages) && this.documentModel) {
+        this.documentModel.pages = JSON.parse(JSON.stringify(snapshot.documentPages));
+      }
+    },
+
+    /**
+     * Adds a dynamic blank page to the document model for spillover.
+     */
+    addBlankPage(width = 595.28, height = 841.89) {
+      if (!this.documentModel) return 1;
+      if (!Array.isArray(this.documentModel.pages)) {
+        this.documentModel.pages = [];
+      }
+      const prevPage = this.documentModel.pages[this.documentModel.pages.length - 1];
+      const newPageNum = this.documentModel.pages.length + 1;
+      const pageW = prevPage?.width || width;
+      const pageH = prevPage?.height || height;
+      this.documentModel.pages.push({
+        pageNumber: newPageNum,
+        width: pageW,
+        height: pageH,
+        blocks: [],
+        lines: [],
+        isBlankPage: true
+      });
+      return newPageNum;
+    },
+
+    /**
+     * Removes a dynamic blank page from the document model if empty or cleaned up.
+     */
+    removeDynamicPage(pageNumber) {
+      if (!this.documentModel?.pages) return;
+      this.documentModel.pages = this.documentModel.pages.filter(
+        p => !(p.pageNumber === pageNumber && p.isBlankPage)
+      );
+    },
+
     /**
      * Completely purges all document-related states, edit arrays, and session markers.
      */
@@ -57,6 +239,9 @@ export const useDocumentStore = defineStore('document', {
       this.fileHandle = null;
       this.fileKey = null;
       this.edits = [];
+      if (this.blockPatches) {
+        this.blockPatches.clear();
+      }
       this.activeBlockId = null;
       this.fileName = '';
       this.errorMessage = null;
@@ -68,6 +253,8 @@ export const useDocumentStore = defineStore('document', {
       this.restoredSession = null;
       this.isRestoredSession = false;
       this.zoom = 1.25;
+      this.history = [];
+      this.future = [];
     },
 
     /**
@@ -86,6 +273,7 @@ export const useDocumentStore = defineStore('document', {
 
       // 2. Clear any active draft cache in storage so previous edits never leak
       try {
+        await sessionStorageService.clearActiveDocument();
         await sessionStorageService.clearDraftCache();
       } catch (cacheErr) {
         console.warn('[documentStore] clearDraftCache warning:', cacheErr);
@@ -139,6 +327,7 @@ export const useDocumentStore = defineStore('document', {
 
       // 2. Clear any active draft cache in storage so previous edits never leak
       try {
+        await sessionStorageService.clearActiveDocument();
         await sessionStorageService.clearDraftCache();
       } catch (cacheErr) {
         console.warn('[documentStore] clearDraftCache warning:', cacheErr);
@@ -370,6 +559,38 @@ export const useDocumentStore = defineStore('document', {
         this.zoom = Math.min(Math.max(session.viewSettings.zoom, 0.5), 3.0);
       }
       this.edits = Array.isArray(session.edits) ? [...session.edits] : [];
+      if (session.blockPatches) {
+        if (session.blockPatches instanceof Map) {
+          this.blockPatches = new Map(session.blockPatches);
+        } else if (Array.isArray(session.blockPatches)) {
+          this.blockPatches = new Map(session.blockPatches);
+        } else if (typeof session.blockPatches === 'object') {
+          this.blockPatches = new Map(Object.entries(session.blockPatches));
+        }
+      } else {
+        this.blockPatches = new Map();
+      }
+
+      // Reconstruct patches from legacy edits if blockPatches was empty
+      if (this.blockPatches.size === 0 && Array.isArray(session.edits) && session.edits.length > 0) {
+        for (const edit of session.edits) {
+          const pageNum = edit.pageNumber || 1;
+          const blockId = edit.lineId || edit.id?.replace(/^redact-block-/, '') || `edit-${Date.now()}`;
+          this.setPatch(pageNum, blockId, {
+            originalText: edit.originalText,
+            newText: edit.newText,
+            fontSize: edit.style?.fontSize,
+            fontFamily: edit.style?.fontFamily,
+            bold: edit.style?.bold,
+            italic: edit.style?.italic,
+            color: edit.style?.color,
+            customFontSize: edit.style?.fontSize,
+            customColor: edit.style?.color,
+            isEdited: true
+          });
+        }
+      }
+
       this.restoredSession = session;
       this.isRestoredSession = true;
     },
@@ -495,6 +716,7 @@ export const useDocumentStore = defineStore('document', {
             fileName: this.fileName || 'document.pdf',
             documentModel: this.documentModel,
             edits: [],
+            blockPatches: [],
             editedBlocksState: {},
             textBlocks: [],
             autoRedactedBlockIds: [],

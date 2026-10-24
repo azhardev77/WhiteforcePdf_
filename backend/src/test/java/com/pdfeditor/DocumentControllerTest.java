@@ -273,7 +273,7 @@ class DocumentControllerTest {
     void testGenerateSamplePdfFiles() throws Exception {
         byte[] resumePdfBytes;
         try (PDDocument doc = new PDDocument()) {
-            PDPage page = new PDPage(new PDRectangle(0, 0, 612, 792));
+            PDPage page = new PDPage(new PDRectangle(595.28f, 841.89f));
             doc.addPage(page);
             try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
                 PDFont boldFont = new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD);
@@ -282,29 +282,29 @@ class DocumentControllerTest {
                 // 1. Top-left: 20pt bold heading "Mohd Azhar Mansoori"
                 cs.beginText();
                 cs.setFont(boldFont, 20);
-                cs.newLineAtOffset(50, 735);
+                cs.newLineAtOffset(50, 785);
                 cs.showText("Mohd Azhar Mansoori");
                 cs.endText();
 
                 // 2. Top-right at X=350: 9pt contact text "Jabalpur   +91-7747047876"
                 cs.beginText();
                 cs.setFont(regularFont, 9);
-                cs.newLineAtOffset(350, 735);
+                cs.newLineAtOffset(350, 785);
                 cs.showText("Jabalpur   +91-7747047876");
                 cs.endText();
 
-                // 3. Right underneath at Y=718: 9pt Blue Links "LinkedIn  GitHub  LeetCode  Hackerank  Scaler  My Portfolio"
-                cs.setNonStrokingColor(new java.awt.Color(0, 102, 204)); // Blue color (#0066cc)
+                // 3. Right underneath at Y=768: 9pt Blue Links "LinkedIn  GitHub  LeetCode  Hackerank  Scaler  My Portfolio"
+                cs.setNonStrokingColor(new java.awt.Color(0, 102, 204));
                 cs.beginText();
                 cs.setFont(regularFont, 9);
-                cs.newLineAtOffset(280, 718);
+                cs.newLineAtOffset(280, 768);
                 cs.showText("LinkedIn  GitHub  LeetCode  Hackerank  Scaler  My Portfolio");
                 cs.endText();
 
-                // 3.5 Right underneath at Y=701: 9pt Email "azharmansoori725@gmail.com"
+                // 3.5 Right underneath at Y=751: 9pt Email "azharmansoori725@gmail.com"
                 cs.beginText();
                 cs.setFont(regularFont, 9);
-                cs.newLineAtOffset(340, 701);
+                cs.newLineAtOffset(340, 751);
                 cs.showText("azharmansoori725@gmail.com");
                 cs.endText();
                 cs.setNonStrokingColor(java.awt.Color.BLACK);
@@ -312,21 +312,73 @@ class DocumentControllerTest {
                 // 4. Subtitle on left: 12pt "Software Developer"
                 cs.beginText();
                 cs.setFont(regularFont, 12);
-                cs.newLineAtOffset(50, 710);
+                cs.newLineAtOffset(50, 760);
                 cs.showText("Software Developer");
                 cs.endText();
 
                 // 5. Professional Summary section
                 cs.beginText();
                 cs.setFont(boldFont, 14);
-                cs.newLineAtOffset(50, 675);
+                cs.newLineAtOffset(50, 725);
                 cs.showText("Professional Summary");
                 cs.endText();
 
                 cs.beginText();
                 cs.setFont(regularFont, 11);
-                cs.newLineAtOffset(50, 655);
+                cs.newLineAtOffset(50, 705);
                 cs.showText("Passionate full-stack software engineer with extensive experience in building robust enterprise applications.");
+                cs.endText();
+
+                // 6. Experience section
+                cs.beginText();
+                cs.setFont(boldFont, 14);
+                cs.newLineAtOffset(50, 670);
+                cs.showText("Experience");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(regularFont, 11);
+                cs.newLineAtOffset(50, 650);
+                cs.showText("Senior Software Engineer at Enterprise Solutions. Architected high-throughput microservices and scalable document processing pipelines.");
+                cs.endText();
+
+                // 7. Projects section
+                cs.beginText();
+                cs.setFont(boldFont, 14);
+                cs.newLineAtOffset(50, 595);
+                cs.showText("Projects");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(regularFont, 11);
+                cs.newLineAtOffset(50, 575);
+                cs.showText("Enterprise Document Visual Editor: High-performance canvas-based PDF editing studio with real-time text reflow.");
+                cs.endText();
+
+                // 8. Achievements section
+                cs.beginText();
+                cs.setFont(boldFont, 14);
+                cs.newLineAtOffset(50, 520);
+                cs.showText("Achievements");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(regularFont, 11);
+                cs.newLineAtOffset(50, 500);
+                cs.showText("Winner of the National Cloud Innovation Hackathon 2024 and Top Open Source Contributor award.");
+                cs.endText();
+
+                // 9. Education section
+                cs.beginText();
+                cs.setFont(boldFont, 14);
+                cs.newLineAtOffset(50, 445);
+                cs.showText("Education");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(regularFont, 11);
+                cs.newLineAtOffset(50, 425);
+                cs.showText("Bachelor of Technology in Computer Science and Engineering, Global Institute of Technology.");
                 cs.endText();
             }
             ByteArrayOutputStream baosResume = new ByteArrayOutputStream();
@@ -336,7 +388,8 @@ class DocumentControllerTest {
 
         Path[] dirs = new Path[] {
             java.nio.file.Paths.get("sample-pdfs"),
-            java.nio.file.Paths.get("..", "sample-pdfs")
+            java.nio.file.Paths.get("..", "sample-pdfs"),
+            java.nio.file.Paths.get("..", "frontend", "public", "samples")
         };
         for (Path dir : dirs) {
             if (java.nio.file.Files.exists(dir)) {

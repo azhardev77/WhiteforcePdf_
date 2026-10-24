@@ -31,8 +31,8 @@
           <span class="badge-status">
             {{ documentStore.pageCount }} {{ documentStore.pageCount === 1 ? 'Page' : 'Pages' }}
           </span>
-          <span v-if="documentStore.editsCount > 0" class="badge-edits">
-            {{ documentStore.editsCount }} {{ documentStore.editsCount === 1 ? 'Edit' : 'Edits' }}
+          <span v-if="(documentStore.paragraphEditsCount || documentStore.editsCount) > 0" class="badge-edits">
+            {{ documentStore.paragraphEditsCount || documentStore.editsCount }} {{ (documentStore.paragraphEditsCount || documentStore.editsCount) === 1 ? 'paragraph edit' : 'paragraph edits' }}
           </span>
         </div>
       </div>
@@ -141,6 +141,8 @@
       :is-exporting="documentStore.isExporting"
       @save="handleSave"
       @export="handleExport"
+      @undo="handleUndo"
+      @redo="handleRedo"
       @revert-all="handleRevertAll"
     />
 
@@ -264,6 +266,34 @@
       </div>
     </div>
 
+    <!-- Non-Blocking Confirmation Dialog for Document Close / Reset -->
+    <div v-if="showCloseConfirmModal" class="loading-overlay" data-testid="close-confirm-modal">
+      <div class="confirm-dialog-modal">
+        <h3 class="confirm-modal-title">Close Document?</h3>
+        <p class="confirm-modal-subtext">
+          Are you sure you want to close the current document and return to the upload screen? Any unsaved edits will be discarded.
+        </p>
+        <div class="confirm-modal-actions">
+          <button
+            type="button"
+            class="btn-confirm-cancel"
+            data-testid="btn-cancel-close-doc"
+            @click="showCloseConfirmModal = false"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="btn-confirm-proceed"
+            data-testid="btn-confirm-close-doc"
+            @click="executeCloseDocument"
+          >
+            Close Document
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Export Success Toast -->
     <transition name="toast-fade">
       <div v-if="exportToastMessage" class="export-toast" data-testid="export-toast">
@@ -294,6 +324,7 @@ const exportToastMessage = ref('');
 let toastTimer = null;
 const isRecentlySaved = ref(false);
 let saveStateTimer = null;
+const showCloseConfirmModal = ref(false);
 
 function showExportToast(msg) {
   exportToastMessage.value = msg;
@@ -332,6 +363,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown);
   if (saveStateTimer) clearTimeout(saveStateTimer);
   if (toastTimer) clearTimeout(toastTimer);
+  if (canvasEditorRef.value?.purgeEditorState) {
+    canvasEditorRef.value.purgeEditorState();
+  }
+  sessionStorageService.clearActiveDocument(documentStore.fileKey).catch(() => {});
 });
 
 async function triggerOpenNewFile() {
@@ -374,14 +409,19 @@ async function handleLogoClick() {
   }
 }
 
-async function handleCloseDocument() {
-  if (window.confirm('Close current document and return to upload screen?')) {
-    if (canvasEditorRef.value?.purgeEditorState) {
-      canvasEditorRef.value.purgeEditorState();
-    }
-    await sessionStorageService.clearDraftCache();
-    documentStore.resetDocument();
+function handleCloseDocument() {
+  showCloseConfirmModal.value = true;
+}
+
+async function executeCloseDocument() {
+  showCloseConfirmModal.value = false;
+  const currentKey = documentStore.fileKey;
+  if (canvasEditorRef.value?.purgeEditorState) {
+    canvasEditorRef.value.purgeEditorState();
   }
+  await sessionStorageService.clearActiveDocument(currentKey);
+  await sessionStorageService.clearDraftCache();
+  documentStore.resetDocument();
 }
 
 async function handleFileNameChange() {
@@ -430,6 +470,7 @@ async function uploadFile(file) {
     if (canvasEditorRef.value?.purgeEditorState) {
       canvasEditorRef.value.purgeEditorState();
     }
+    await sessionStorageService.clearActiveDocument();
     await documentStore.uploadAndExtract(file);
   } catch {
     // Error is set in store
@@ -441,6 +482,7 @@ async function loadSampleDocument() {
     if (canvasEditorRef.value?.purgeEditorState) {
       canvasEditorRef.value.purgeEditorState();
     }
+    await sessionStorageService.clearActiveDocument();
     await documentStore.loadSample('sample.pdf');
   } catch {
     // Error is set in store
@@ -452,6 +494,7 @@ async function loadResumeDocument() {
     if (canvasEditorRef.value?.purgeEditorState) {
       canvasEditorRef.value.purgeEditorState();
     }
+    await sessionStorageService.clearActiveDocument();
     await documentStore.loadSample('resume.pdf');
   } catch {
     // Error is set in store
@@ -523,6 +566,24 @@ async function handleExport() {
 function handleRevertAll() {
   if (canvasEditorRef.value?.revertAll) {
     canvasEditorRef.value.revertAll();
+  } else {
+    documentStore.clearAllPatches(true);
+  }
+}
+
+function handleUndo() {
+  if (canvasEditorRef.value?.executeUndo) {
+    canvasEditorRef.value.executeUndo();
+  } else {
+    documentStore.undo();
+  }
+}
+
+function handleRedo() {
+  if (canvasEditorRef.value?.executeRedo) {
+    canvasEditorRef.value.executeRedo();
+  } else {
+    documentStore.redo();
   }
 }
 
@@ -1061,5 +1122,84 @@ function confirmReset() {
 
 .text-green {
   color: #34d399;
+}
+
+.confirm-dialog-modal {
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: var(--radius-lg, 12px);
+  padding: 24px;
+  max-width: 420px;
+  width: 90%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4);
+  animation: modalScaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalScaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.confirm-modal-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.confirm-modal-subtext {
+  margin: 0;
+  font-size: 13px;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+.confirm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.btn-confirm-cancel {
+  background: transparent;
+  border: 1px solid #475569;
+  color: #cbd5e1;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-confirm-cancel:hover {
+  background: #334155;
+  color: #f8fafc;
+}
+
+.btn-confirm-proceed {
+  background: #dc2626;
+  border: 1px solid #ef4444;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-confirm-proceed:hover {
+  background: #b91c1c;
 }
 </style>
