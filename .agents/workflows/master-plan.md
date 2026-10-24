@@ -43,6 +43,7 @@ GET /api/v1/sessions/{id}/result [X-API-KEY] -> processed PDF bytes
 POST /app/sessions [no key, rate/size limited] multipart file + mode -> {id}
 GET /app/sessions/{id}/pdf -> PDF bytes (404 if expired)
 Source = API for /api/v1, UPLOAD for /app. An API client may only read sessions it created.
+editUrl is built from config property app.public-base-url (default http://localhost:5173), never hardcoded. /app/sessions rate limit: simple in-memory per-IP limit (e.g. 10 uploads/minute), configurable.
 c) Validate input: magic bytes %PDF, loadable by PDFBox, max size (configurable), reject password-protected PDFs with a clear 4xx. Never trust the filename.
 d) Tests for: create/read, wrong key, expired session, non-PDF, oversized, cross-client access.
 
