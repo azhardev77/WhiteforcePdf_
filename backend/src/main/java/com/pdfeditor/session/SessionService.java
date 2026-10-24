@@ -20,11 +20,15 @@ public class SessionService {
     private final ConcurrentHashMap<String, PdfSession> sessionMap = new ConcurrentHashMap<>();
     private final SessionProperties properties;
     private final SessionValidator sessionValidator;
+    private final com.pdfeditor.rules.ResumeRedactionService resumeRedactionService;
     private final SecureRandom secureRandom = new SecureRandom();
 
-    public SessionService(SessionProperties properties, SessionValidator sessionValidator) {
+    public SessionService(SessionProperties properties,
+                          SessionValidator sessionValidator,
+                          @org.springframework.beans.factory.annotation.Autowired(required = false) com.pdfeditor.rules.ResumeRedactionService resumeRedactionService) {
         this.properties = properties;
         this.sessionValidator = sessionValidator;
+        this.resumeRedactionService = resumeRedactionService;
     }
 
     public String generateSessionId() {
@@ -43,6 +47,10 @@ public class SessionService {
 
     public PdfSession createSession(MultipartFile file, Mode mode, Source source, String clientId) throws IOException {
         byte[] validPdfBytes = sessionValidator.validate(file);
+
+        if (mode == Mode.RESUME && resumeRedactionService != null) {
+            validPdfBytes = resumeRedactionService.redactResume(validPdfBytes);
+        }
 
         String sessionId = generateSessionId();
         Path storageDir = getStorageDir();
