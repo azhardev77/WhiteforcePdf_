@@ -23,19 +23,16 @@ GOLDEN RULES (non-negotiable - nothing that works today may break)
 6. Do not guess. If a requirement is unclear or a file doesn't behave as expected, STOP and report instead of inventing behavior.
 7. Execute ONE phase at a time. After each phase, STOP and send the report. Do not start the next phase until I say "go phase N".
 
-PHASE 0 - BASELINE (read-only, change nothing)
-a) Make sure the branch exists. Run backend tests and frontend build; record exact pass/fail counts and the 42 IDE "Problems" (group by file/severity).
-b) Run verify-e2e.cjs against the running app and record whether it passes.
-c) Investigate this log line and tell me the root cause: "WARN ApiKeyAuthFilter - Unauthorized API access attempt to [/api/export/redact] from IP 0:0:0:0:0:0:0:1: missing or invalid 'X-API-KEY' header". Find which caller sent it (browser via frontend/src/api/http.js, verify-e2e.cjs, curl, other) and whether the key actually sent matches the backend key. Do NOT fix it.
-d) In frontend/src/stores/document.js (around lines 510 and 638) the code falls back to pdf-lib client export when backend /api/export/redact fails. Confirm whether that fallback can leave the original text inside the PDF file. Report only.
-e) Run `git ls-files` and tell me whether target/, dist/, node_modules/, src.rar are tracked.
-f) Real test: take sample-pdfs/resume.pdf, run it through the existing redaction path (PdfRedactionService.redactAndReplace with a box over the email), extract text from the OUTPUT with PDFBox PDFTextStripper, and tell me whether the removed text is truly gone from the file or still extractable. Also check images and vector graphics under a redaction box. Also tell me if sample-pdfs/resume.pdf already contains hidden/redacted contact info.
+PHASE 0 - DONE. Baseline: 41 backend tests pass, frontend build OK, verify-e2e.cjs passes. Do not re-run.
 
 PHASE 1 - SECURITY (keep everything working)
-a) Remove the hardcoded default "my_secure_secret_key_12345" from SecurityConfig, application.yml, and frontend/src/api/http.js. Backend reads API_KEY from env; if missing, the app must FAIL TO START with a clear message. Frontend reads VITE_API_KEY from a git-ignored .env; update .env.example with placeholders. With both set, behavior must be identical to today.
+Note: I have already set API_KEY (system env) and VITE_API_KEY (frontend/.env, git-ignored). Never generate, print, or write a key into any tracked file.
+a) Remove the hardcoded default "my_secure_secret_key_12345" from SecurityConfig, application.yml, and frontend/src/api/http.js. Backend reads API_KEY from env; if missing, the app must FAIL TO START with a clear message. Frontend reads VITE_API_KEY from frontend/.env; update .env.example with placeholders only. With both set, behavior must be identical to today.
 b) Compare API keys with MessageDigest.isEqual (constant time).
 c) Fix path traversal in /api/documents/extract-sample and /raw-sample: resolve against the sample-pdfs directory, normalize, reject anything that escapes it. Add tests (../, absolute paths, encoded variants).
-d) Update existing tests that depended on the default key. Do not weaken them.
+d) Update existing tests that depended on the default key (use test properties, never a real key). Do not weaken them.
+e) Make DocumentControllerTest.testGenerateSamplePdfFiles() write to a temp directory instead of overwriting sample-pdfs/. This is the one allowed change to an existing test.
+f) Add User-Agent and Origin to the "Unauthorized API access attempt" WARN log line, so the caller can be identified next time.
 Note: the browser still needs a key for legacy endpoints during this migration; it is replaced by session-scoped access in Phase 4.
 
 PHASE 2 - SESSIONS (backend)
@@ -55,8 +52,9 @@ b) Port frontend/src/utils/piiRedactor.js to Java as PiiDetector. Read that file
 c) Matches can span multiple text runs/lines: map character offsets to run bboxes and emit one box per run/line. Reuse how the frontend computes PII boxes if it already does.
 d) Pipeline for RESUME: extract -> RuleSet -> TextRedactionEdit (empty replacement) -> PdfRedactionService.redactAndReplace -> save result. Applied automatically at session creation for both UPLOAD and API sources.
 e) If the PDF has no extractable text (scanned/image-only), RESUME must return a clear 422, never a silent "success".
-f) MANDATORY verification test: process sample-pdfs/resume.pdf, then (1) extract text from the output with PDFTextStripper and assert no email/phone remains, (2) scan raw content streams for the strings, (3) assert page count/size unchanged, (4) assert all non-PII text is unchanged. If the text is still recoverable anywhere, the phase FAILS - fix the redaction, do not paint over it.
-g) Document honestly any case that cannot be handled (e.g. PII inside images).
+f) MANDATORY verification test, on sample-pdfs/resume.pdf AND every PDF in backend/src/test/resources/fixtures/ (real resumes from Word, Google Docs, Canva, LaTeX that I will add; if the folder is empty, STOP and ask me): (1) extract text from the output with PDFTextStripper and assert no email/phone remains, (2) scan raw content streams for the strings, (3) assert page count/size unchanged, (4) assert all non-PII text is unchanged. If the text is still recoverable anywhere, the phase FAILS - fix the redaction, do not paint over it.
+g) Also remove mailto:/tel: and other link annotations containing a matched email/phone, scrub the same values from document Info and XMP metadata, and handle text inside Form XObjects, TJ arrays and hex-encoded fonts. The verification must check annotations and metadata too.
+h) Document honestly any case that cannot be handled (e.g. PII inside images).
 
 PHASE 4 - FRONTEND HOME + ROUTES
 a) New HomeView at "/" with three main buttons: Resume, Tender, Edit PDF, plus a secondary "API access" card (docs + sample curl). Routes: /resume, /tender, /edit, /edit/:sessionId. Keep the current editor reachable at /editor and update verify-e2e.cjs to use /editor ONLY if needed; it must still pass unchanged otherwise.
@@ -66,8 +64,8 @@ c) Editor must keep all current features. Make minimal changes to EditorView/doc
 PHASE 5 - MARK AND APPLY
 a) "Mark" tool in the editor: user selects text or draws an area; marks are kept in a list (page, bbox, kind DELETE|REPLACE, newText).
 b) "Apply" sends marks to POST /app/sessions/{id}/apply, executed server-side via PdfRedactionService. Never use client-side pdf-lib for removal.
-c) Fix the silent fallback from Phase 0(d): for RESUME/MARK flows, backend failure must show an error and must NOT fall back to pdf-lib. Legacy flows keep today's behavior.
-d) Test text, images and vector graphics under a mark. If any content under a mark cannot be truly removed, return it in a `warnings` field and show it in the UI. Do not claim removal that did not happen.
+c) Fix the silent fallback in frontend/src/stores/document.js (pdf-lib fallback paints a white box and leaves the text in the file): for RESUME/MARK flows, backend failure must show an error and must NOT fall back to pdf-lib. Legacy flows keep today's behavior.
+d) Test text, images and vector graphics under a mark (PdfRedactionService currently strips only text operators, not images/vector paths). If any content under a mark cannot be truly removed, return it in a `warnings` field and show it in the UI. Do not claim removal that did not happen.
 
 PHASE 6 - AUTO CLEANUP
 @Scheduled job (every few minutes) deletes expired sessions and their files; on startup also remove orphan files older than TTL. Path-safe deletes only inside app.sessions.dir. Tests with a short TTL.
