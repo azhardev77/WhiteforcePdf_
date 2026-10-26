@@ -259,8 +259,19 @@ class SessionControllerTest {
         // Download via public endpoint
         mockMvc.perform(get("/app/sessions/" + sessionId + "/pdf"))
                 .andExpect(status().isOk())
+                .andExpect(header().string("X-Session-Mode", "MARK"))
+                .andExpect(header().string("X-Session-Source", "UPLOAD"))
                 .andExpect(content().contentType(MediaType.APPLICATION_PDF))
                 .andExpect(content().bytes(samplePdfBytes));
+
+        // Read metadata via public endpoint
+        mockMvc.perform(get("/app/sessions/" + sessionId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id", is(sessionId)))
+                .andExpect(jsonPath("$.mode", is("MARK")))
+                .andExpect(jsonPath("$.source", is("UPLOAD")))
+                .andExpect(jsonPath("$.status", is("READY")))
+                .andExpect(jsonPath("$.expiresAt").isNotEmpty());
     }
 
     @Test

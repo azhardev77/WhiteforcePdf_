@@ -4,6 +4,7 @@ import { exportModifiedPdf, triggerBrowserDownload } from '@/services/pdfLibExpo
 import sessionStorageService from '@/services/sessionStorageService';
 import { extractPdf, extractSample, fetchRawSamplePdf } from '@/api/documents';
 import { exportPdf, exportRedactedPdf, requestRedactedPdf, exportHtml } from '@/api/export';
+import { fetchAppSessionPdf, fetchAppSessionInfo } from '@/api/sessions';
 
 export const useDocumentStore = defineStore('document', {
   state: () => ({
@@ -25,6 +26,9 @@ export const useDocumentStore = defineStore('document', {
     fileName: '',
     restoredSession: null,
     isRestoredSession: false,
+    sessionId: null,
+    sessionMode: null,
+    sessionSource: null,
     history: [],           // Array<HistorySnapshot>, max 30
     future: []             // Array<HistorySnapshot> for redo
   }),
@@ -252,6 +256,9 @@ export const useDocumentStore = defineStore('document', {
       this.lastSavedTime = null;
       this.restoredSession = null;
       this.isRestoredSession = false;
+      this.sessionId = null;
+      this.sessionMode = null;
+      this.sessionSource = null;
       this.zoom = 1.25;
       this.history = [];
       this.future = [];
@@ -381,6 +388,78 @@ export const useDocumentStore = defineStore('document', {
         return model;
       } catch (err) {
         this.errorMessage = err.message || `Failed to extract sample PDF: ${sampleFileName}`;
+        throw err;
+      } finally {
+        this.isExtracting = false;
+      }
+    },
+
+    /**
+     * Loads a PDF document from an active backend session.
+     *
+     * @param {string} sessionId - Backend session ID
+     * @returns {Promise<Object>} Extracted DocumentModel
+     */
+    async loadFromSession(sessionId) {
+      if (!sessionId) return null;
+
+      this.purgeDocumentState();
+      this.isExtracting = true;
+      this.sessionId = sessionId;
+      this.fileName = `${sessionId}.pdf`;
+
+      try {
+        await sessionStorageService.clearActiveDocument();
+        await sessionStorageService.clearDraftCache();
+      } catch (cacheErr) {
+        console.warn('[documentStore] clearDraftCache warning:', cacheErr);
+      }
+
+      try {
+        const { arrayBuffer, mode, source } = await fetchAppSessionPdf(sessionId);
+
+        if (mode) this.sessionMode = mode;
+        if (source) this.sessionSource = source;
+
+        if (!this.sessionMode || !this.sessionSource) {
+          try {
+            const meta = await fetchAppSessionInfo(sessionId);
+            if (meta?.mode) this.sessionMode = meta.mode;
+            if (meta?.source) this.sessionSource = meta.source;
+          } catch {
+            // Non-critical if headers were missing
+          }
+        }
+
+        if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+          throw new Error('Session PDF content is empty');
+        }
+
+        const fileKey = await sessionStorageService.computeFileHash(arrayBuffer, {
+          sessionId,
+          fileSize: arrayBuffer.byteLength
+        });
+
+        let model = null;
+        try {
+          model = await extractPdfClient(arrayBuffer, this.fileName);
+        } catch (clientErr) {
+          console.warn('[documentStore] Client extraction failed for session, trying fallback:', clientErr);
+          const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+          const file = new File([blob], this.fileName, { type: 'application/pdf' });
+          model = await extractPdf(file);
+          if (model && !model.name) {
+            model.name = this.fileName;
+          }
+        }
+
+        this.originalPdfData = arrayBuffer;
+        this.originalFile = new Blob([arrayBuffer], { type: 'application/pdf' });
+        this.fileKey = fileKey;
+        this.documentModel = model;
+        return model;
+      } catch (err) {
+        this.errorMessage = err.message || `Failed to load session: ${sessionId}`;
         throw err;
       } finally {
         this.isExtracting = false;

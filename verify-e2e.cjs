@@ -23,8 +23,8 @@ const fs = require('fs');
   page.on('pageerror', err => console.error('[Browser Error]:', err));
 
   try {
-    console.log('1. Navigating to http://localhost:5173...');
-    await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
+    console.log('1. Navigating to http://localhost:5173/editor...');
+    await page.goto('http://localhost:5173/editor', { waitUntil: 'networkidle' });
 
     console.log('2. Clicking "Open Tender RFQ PDF" button...');
     const sampleBtn = page.locator('button.btn-sample-tender');
@@ -520,7 +520,7 @@ const fs = require('fs');
         }
       } catch (e) {}
     });
-    await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
+    await page.goto('http://localhost:5173/editor', { waitUntil: 'networkidle' });
 
     console.log('Clicking "Open Resume PDF" button...');
     const resumeBtn = page.locator('button.btn-sample-resume');
@@ -748,7 +748,7 @@ const fs = require('fs');
         }
       } catch (e) {}
     });
-    await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
+    await page.goto('http://localhost:5173/editor', { waitUntil: 'networkidle' });
     const freshResumeBtn = page.locator('button.btn-sample-resume');
     await freshResumeBtn.waitFor({ state: 'visible', timeout: 5000 });
     await freshResumeBtn.click();

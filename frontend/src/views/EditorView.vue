@@ -28,6 +28,9 @@
             placeholder="Document Name"
             @change="handleFileNameChange"
           />
+          <span v-if="documentStore.sessionMode" class="badge-session-mode" data-testid="session-mode-badge">
+            {{ documentStore.sessionMode }} &bull; {{ documentStore.sessionSource || 'UPLOAD' }}
+          </span>
           <span class="badge-status">
             {{ documentStore.pageCount }} {{ documentStore.pageCount === 1 ? 'Page' : 'Pages' }}
           </span>
@@ -309,11 +312,13 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { useRoute } from 'vue-router';
 import { useDocumentStore } from '@/stores/document';
 import EditorToolbar from '@/components/EditorToolbar.vue';
 import PdfCanvasEditor from '@/components/PdfCanvasEditor.vue';
 import sessionStorageService from '@/services/sessionStorageService';
 
+const route = useRoute();
 const documentStore = useDocumentStore();
 
 const isDragging = ref(false);
@@ -346,6 +351,18 @@ function handleGlobalKeydown(e) {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown);
+
+  const sessionId = route?.params?.sessionId;
+  if (sessionId) {
+    try {
+      await documentStore.loadFromSession(sessionId);
+    } catch (err) {
+      console.warn('[Session] Failed to load session from route:', err);
+    } finally {
+      isHydrating.value = false;
+    }
+    return;
+  }
 
   try {
     const session = await sessionStorageService.loadSession();
@@ -693,6 +710,18 @@ function confirmReset() {
   font-size: 11px;
   font-weight: 600;
   border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.badge-session-mode {
+  background: rgba(99, 102, 241, 0.2);
+  color: #a5b4fc;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  text-transform: uppercase;
 }
 
 .header-right {

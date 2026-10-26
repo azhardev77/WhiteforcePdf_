@@ -128,8 +128,33 @@ public class SessionController {
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + session.getId() + ".pdf\"")
+                .header("X-Session-Mode", session.getMode().name())
+                .header("X-Session-Source", session.getSource().name())
                 .contentType(MediaType.APPLICATION_PDF)
                 .body(pdfBytes);
+    }
+
+    /**
+     * GET /app/sessions/{id}
+     * -> Session metadata {id, mode, source, status, expiresAt} (404 if expired)
+     */
+    @GetMapping("/app/sessions/{id}")
+    public ResponseEntity<?> getAppSession(@PathVariable("id") String id) {
+        Optional<PdfSession> sessionOpt = sessionService.getSession(id);
+        if (sessionOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(createErrorBody(404, "Not Found", "Session not found or has expired"));
+        }
+
+        PdfSession session = sessionOpt.get();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("id", session.getId());
+        body.put("mode", session.getMode().name());
+        body.put("source", session.getSource().name());
+        body.put("status", session.getStatus().name());
+        body.put("expiresAt", session.getExpiresAt().toString());
+        return ResponseEntity.ok(body);
     }
 
     @ExceptionHandler(SessionValidationException.class)
