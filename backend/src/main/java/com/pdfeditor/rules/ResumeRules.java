@@ -202,7 +202,7 @@ public class ResumeRules implements RuleSet {
         double origH = firstBox[3];
 
         double padLeft = Math.max(origH, 12.0) * 1.6;
-        double expandedX = Math.max(0, origX - padLeft);
+        double expandedX = origX;
         double boxTop = origY;
         double boxBottom = origY + origH;
 

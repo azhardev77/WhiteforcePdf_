@@ -146,6 +146,7 @@ class ResumeRedactionTest {
                 .isNotEmpty();
 
         for (Path pdfPath : fixturePdfs) {
+            System.out.println("=== Processing fixture: " + pdfPath.getFileName() + " ===");
             byte[] originalBytes = Files.readAllBytes(pdfPath);
             int origPageCount;
             float origWidth;
@@ -155,6 +156,14 @@ class ResumeRedactionTest {
                 PDPage p1 = origDoc.getPage(0);
                 origWidth = p1.getMediaBox().getWidth();
                 origHeight = p1.getMediaBox().getHeight();
+            }
+
+            com.pdfeditor.model.DocumentModel model = new com.pdfeditor.extraction.ExtractionPipeline().extract(originalBytes, pdfPath.getFileName().toString());
+            System.out.println("Model pages: " + model.getPages().size());
+            List<Match> matches = new ResumeRules().find(model);
+            System.out.println("Matches found (" + matches.size() + "):");
+            for (Match m : matches) {
+                System.out.println("  Match: type=" + m.getType() + ", text='" + m.getMatchedText() + "', bbox=" + java.util.Arrays.toString(m.getBbox()));
             }
 
             byte[] redactedBytes = resumeRedactionService.redactResume(originalBytes);
@@ -168,11 +177,14 @@ class ResumeRedactionTest {
 
                 PDFTextStripper stripper = new PDFTextStripper();
                 String extracted = stripper.getText(doc);
+                System.out.println("Extracted text after redaction:\n" + extracted.trim());
 
                 // Assert no email remains
                 List<PiiDetector.PiiSpan> spans = PiiDetector.findPIISpans(extracted);
-                assertThat(spans).isEmpty();
-
+                if (!spans.isEmpty()) {
+                    System.err.println("FAILED on fixture: " + pdfPath.getFileName() + " with spans: " + spans);
+                }
+                assertThat(spans).withFailMessage("Fixture failed: " + pdfPath.getFileName() + ", spans: " + spans).isEmpty();
                 // Scan raw streams
                 for (PDPage page : doc.getPages()) {
                     Iterator<PDStream> streams = page.getContentStreams();

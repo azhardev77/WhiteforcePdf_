@@ -10,7 +10,9 @@ import org.apache.pdfbox.contentstream.operator.Operator;
 import org.apache.pdfbox.cos.COSArray;
 import org.apache.pdfbox.cos.COSBase;
 import org.apache.pdfbox.cos.COSDictionary;
+import org.apache.pdfbox.cos.COSFloat;
 import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.cos.COSNumber;
 import org.apache.pdfbox.cos.COSString;
 import org.apache.pdfbox.pdfparser.PDFStreamParser;
 import org.apache.pdfbox.pdfwriter.ContentStreamWriter;
@@ -18,6 +20,9 @@ import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDDocumentInformation;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDResources;
+import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDType0Font;
+import org.apache.pdfbox.util.Matrix;
 import org.apache.pdfbox.pdmodel.common.PDMetadata;
 import org.apache.pdfbox.pdmodel.common.PDStream;
 import org.apache.pdfbox.pdmodel.graphics.PDXObject;
@@ -31,12 +36,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
 
@@ -235,21 +243,34 @@ public class ResumeRedactionService {
     }
 
     private void scrubAllContentStreams(PDDocument doc, List<Match> matches) {
+        if (matches == null || matches.isEmpty()) return;
+        int pageNum = 1;
         for (PDPage page : doc.getPages()) {
-            scrubPageStreams(doc, page, matches);
-            scrubFormXObjects(doc, page.getResources(), matches);
+            final int currPage = pageNum;
+            List<Match> pageMatches = matches.stream()
+                    .filter(m -> m.getPageNumber() == currPage)
+                    .toList();
+            if (!pageMatches.isEmpty() && page.hasContents()) {
+                scrubPageStreams(doc, page, pageMatches);
+                scrubFormXObjects(doc, page.getResources(), pageMatches, page);
+            }
+            pageNum++;
         }
     }
 
-    private void scrubPageStreams(PDDocument doc, PDPage page, List<Match> matches) {
+    private void scrubPageStreams(PDDocument doc, PDPage page, List<Match> pageMatches) {
         try {
+            float pageH = page.getCropBox() != null ? page.getCropBox().getHeight() : page.getMediaBox().getHeight();
+            float originX = page.getCropBox() != null ? page.getCropBox().getLowerLeftX() : 0f;
+            float originY = page.getCropBox() != null ? page.getCropBox().getLowerLeftY() : 0f;
+
             Iterator<PDStream> iter = page.getContentStreams();
             List<PDStream> newStreams = new ArrayList<>();
             boolean modifiedAny = false;
 
             while (iter.hasNext()) {
                 PDStream stream = iter.next();
-                PDStream resultStream = scrubSingleStream(doc, stream, matches);
+                PDStream resultStream = scrubSingleStream(doc, stream, pageMatches, page.getResources(), pageH, originX, originY);
                 if (resultStream != null) {
                     newStreams.add(resultStream);
                     modifiedAny = true;
@@ -266,22 +287,27 @@ public class ResumeRedactionService {
         }
     }
 
-    private void scrubFormXObjects(PDDocument doc, PDResources resources, List<Match> matches) {
+    private void scrubFormXObjects(PDDocument doc, PDResources resources, List<Match> pageMatches, PDPage page) {
         if (resources == null) return;
+        float pageH = page.getCropBox() != null ? page.getCropBox().getHeight() : page.getMediaBox().getHeight();
+        float originX = page.getCropBox() != null ? page.getCropBox().getLowerLeftX() : 0f;
+        float originY = page.getCropBox() != null ? page.getCropBox().getLowerLeftY() : 0f;
+
         for (COSName name : resources.getXObjectNames()) {
             try {
                 PDXObject xobject = resources.getXObject(name);
                 if (xobject instanceof PDFormXObject formXObject) {
                     PDStream stream = formXObject.getContentStream();
                     if (stream != null) {
-                        PDStream resultStream = scrubSingleStream(doc, stream, matches);
+                        PDResources formRes = formXObject.getResources() != null ? formXObject.getResources() : resources;
+                        PDStream resultStream = scrubSingleStream(doc, stream, pageMatches, formRes, pageH, originX, originY);
                         if (resultStream != null) {
                             formXObject.getCOSObject().setItem(COSName.CONTENTS, resultStream);
                         }
                     }
                     PDResources nested = formXObject.getResources();
                     if (nested != null && nested != resources) {
-                        scrubFormXObjects(doc, nested, matches);
+                        scrubFormXObjects(doc, nested, pageMatches, page);
                     }
                 }
             } catch (Exception ignored) {
@@ -289,71 +315,133 @@ public class ResumeRedactionService {
         }
     }
 
-    private PDStream scrubSingleStream(PDDocument doc, PDStream stream, List<Match> matches) {
+    private PDStream scrubSingleStream(PDDocument doc, PDStream stream, List<Match> matches,
+                                       PDResources res, float pageH, float originX, float originY) {
         try {
             PDFStreamParser parser = new PDFStreamParser(stream.toByteArray());
             List<Object> tokens = parser.parse();
             parser.close();
-            List<Object> newTokens = new ArrayList<>();
+
+            Deque<Matrix> ctmStack = new ArrayDeque<>();
+            Matrix ctm = new Matrix();
+            Matrix textMatrix = null;
+            Matrix textLineMatrix = null;
+            PDFont activeFont = null;
+            float fontSize = 0f;
+            float hScaling = 100f;
+            float textLeading = 0f;
+            boolean streamModified = false;
+
+            List<Object> newTokens = new ArrayList<>(tokens.size());
             List<Object> currentOperands = new ArrayList<>();
-            boolean modified = false;
 
             for (Object token : tokens) {
                 if (token instanceof Operator op) {
                     String opName = op.getName();
 
-                    if ("Tj".equals(opName) || "'".equals(opName) || "\"".equals(opName)) {
+                    if ("cm".equals(opName)) {
+                        if (currentOperands.size() >= 6) {
+                            float a = getFloatOperand(currentOperands.get(0));
+                            float b = getFloatOperand(currentOperands.get(1));
+                            float c = getFloatOperand(currentOperands.get(2));
+                            float d = getFloatOperand(currentOperands.get(3));
+                            float e = getFloatOperand(currentOperands.get(4));
+                            float f = getFloatOperand(currentOperands.get(5));
+                            ctm.concatenate(new Matrix(a, b, c, d, e, f));
+                        }
+                    } else if ("q".equals(opName)) {
+                        ctmStack.push(ctm.clone());
+                    } else if ("Q".equals(opName)) {
+                        ctm = ctmStack.isEmpty() ? new Matrix() : ctmStack.pop();
+                    } else if ("BT".equals(opName)) {
+                        textMatrix = new Matrix();
+                        textLineMatrix = new Matrix();
+                    } else if ("ET".equals(opName)) {
+                        textMatrix = null;
+                        textLineMatrix = null;
+                    } else if ("Tf".equals(opName)) {
+                        if (currentOperands.size() >= 2) {
+                            if (currentOperands.get(0) instanceof COSName fontName && res != null) {
+                                try {
+                                    activeFont = res.getFont(fontName);
+                                } catch (Exception ignored) {}
+                            }
+                            fontSize = getFloatOperand(currentOperands.get(1));
+                        }
+                    } else if ("Tz".equals(opName)) {
+                        if (!currentOperands.isEmpty()) {
+                            hScaling = getFloatOperand(currentOperands.get(0));
+                        }
+                    } else if ("TL".equals(opName)) {
+                        if (!currentOperands.isEmpty()) {
+                            textLeading = getFloatOperand(currentOperands.get(0));
+                        }
+                    } else if ("Tm".equals(opName)) {
+                        if (currentOperands.size() >= 6) {
+                            textMatrix = new Matrix(
+                                    getFloatOperand(currentOperands.get(0)), getFloatOperand(currentOperands.get(1)),
+                                    getFloatOperand(currentOperands.get(2)), getFloatOperand(currentOperands.get(3)),
+                                    getFloatOperand(currentOperands.get(4)), getFloatOperand(currentOperands.get(5))
+                            );
+                            textLineMatrix = textMatrix.clone();
+                        }
+                    } else if ("Td".equals(opName)) {
+                        if (currentOperands.size() >= 2 && textLineMatrix != null) {
+                            float tx = getFloatOperand(currentOperands.get(0));
+                            float ty = getFloatOperand(currentOperands.get(1));
+                            textLineMatrix.concatenate(new Matrix(1, 0, 0, 1, tx, ty));
+                            textMatrix = textLineMatrix.clone();
+                        }
+                    } else if ("TD".equals(opName)) {
+                        if (currentOperands.size() >= 2 && textLineMatrix != null) {
+                            float tx = getFloatOperand(currentOperands.get(0));
+                            float ty = getFloatOperand(currentOperands.get(1));
+                            textLeading = -ty;
+                            textLineMatrix.concatenate(new Matrix(1, 0, 0, 1, tx, ty));
+                            textMatrix = textLineMatrix.clone();
+                        }
+                    } else if ("T*".equals(opName)) {
+                        if (textLineMatrix != null) {
+                            textLineMatrix.concatenate(new Matrix(1, 0, 0, 1, 0, -textLeading));
+                            textMatrix = textLineMatrix.clone();
+                        }
+                    } else if ("Tj".equals(opName) || "'".equals(opName) || "\"".equals(opName)) {
                         if (!currentOperands.isEmpty() && currentOperands.get(currentOperands.size() - 1) instanceof COSString cosStr) {
-                            String original = cosStr.getString();
-                            if (PiiDetector.hasPII(original) || matchesAnyPii(original, matches)) {
-                                String scrubbed = PiiDetector.redactPIIFromText(original);
-                                for (Match m : matches) {
-                                    scrubbed = scrubbed.replace(m.getMatchedText(), "").trim();
-                                }
-                                if (scrubbed.isEmpty()) {
+                            COSArray asArr = new COSArray();
+                            asArr.add(cosStr);
+                            COSArray scrubbed = scrubCosArray(asArr, textMatrix, ctm, activeFont, fontSize, hScaling, matches, pageH, originX, originY);
+                            if (scrubbed != null) {
+                                streamModified = true;
+                                if (scrubbed.size() == 0 || !containsAnyString(scrubbed)) {
                                     currentOperands.remove(currentOperands.size() - 1);
+                                    if (("'".equals(opName) || "\"".equals(opName)) && textLineMatrix != null) {
+                                        textLineMatrix.concatenate(new Matrix(1, 0, 0, 1, 0, -textLeading));
+                                        textMatrix = textLineMatrix.clone();
+                                    }
                                     currentOperands.clear();
-                                    modified = true;
                                     continue;
                                 } else {
-                                    cosStr.setValue(scrubbed.getBytes(StandardCharsets.ISO_8859_1));
-                                    modified = true;
+                                    currentOperands.remove(currentOperands.size() - 1);
+                                    currentOperands.add(scrubbed);
+                                    op = Operator.getOperator("TJ");
                                 }
                             }
                         }
+                        if (("'".equals(opName) || "\"".equals(opName)) && textLineMatrix != null) {
+                            textLineMatrix.concatenate(new Matrix(1, 0, 0, 1, 0, -textLeading));
+                            textMatrix = textLineMatrix.clone();
+                        }
                     } else if ("TJ".equals(opName)) {
                         if (!currentOperands.isEmpty() && currentOperands.get(currentOperands.size() - 1) instanceof COSArray arr) {
-                            COSArray newArr = new COSArray();
-                            boolean arrModified = false;
-                            for (int i = 0; i < arr.size(); i++) {
-                                COSBase item = arr.get(i);
-                                if (item instanceof COSString cosStr) {
-                                    String str = cosStr.getString();
-                                    if (PiiDetector.hasPII(str) || matchesAnyPii(str, matches)) {
-                                        String scrubbed = PiiDetector.redactPIIFromText(str);
-                                        for (Match m : matches) {
-                                            scrubbed = scrubbed.replace(m.getMatchedText(), "").trim();
-                                        }
-                                        if (!scrubbed.isEmpty()) {
-                                            newArr.add(new COSString(scrubbed));
-                                        }
-                                        arrModified = true;
-                                    } else {
-                                        newArr.add(item);
-                                    }
-                                } else {
-                                    newArr.add(item);
-                                }
-                            }
-
-                            if (arrModified) {
-                                modified = true;
-                                if (newArr.size() == 0) {
+                            COSArray scrubbed = scrubCosArray(arr, textMatrix, ctm, activeFont, fontSize, hScaling, matches, pageH, originX, originY);
+                            if (scrubbed != null) {
+                                streamModified = true;
+                                if (scrubbed.size() == 0 || !containsAnyString(scrubbed)) {
                                     currentOperands.remove(currentOperands.size() - 1);
                                     currentOperands.clear();
                                     continue;
                                 } else {
-                                    currentOperands.set(currentOperands.size() - 1, newArr);
+                                    currentOperands.set(currentOperands.size() - 1, scrubbed);
                                 }
                             }
                         }
@@ -371,7 +459,7 @@ public class ResumeRedactionService {
                 newTokens.addAll(currentOperands);
             }
 
-            if (modified) {
+            if (streamModified) {
                 PDStream newStream = new PDStream(doc);
                 try (OutputStream os = newStream.createOutputStream(COSName.FLATE_DECODE)) {
                     ContentStreamWriter writer = new ContentStreamWriter(os);
@@ -383,6 +471,187 @@ public class ResumeRedactionService {
             log.warn("Error parsing stream tokens: {}", e.getMessage());
         }
         return null;
+    }
+
+    private boolean containsAnyString(COSArray arr) {
+        if (arr == null) return false;
+        for (int i = 0; i < arr.size(); i++) {
+            if (arr.get(i) instanceof COSString) return true;
+        }
+        return false;
+    }
+
+    private COSArray scrubCosArray(COSArray arr, Matrix textMatrix, Matrix ctm,
+                                   PDFont font, float fontSize, float hScaling,
+                                   List<Match> matches, float pageH, float originX, float originY) {
+        COSArray result = new COSArray();
+        float scale = hScaling / 100.0f;
+        ByteArrayOutputStream keptBytes = new ByteArrayOutputStream();
+        float accumulatedAdjustment = 0f;
+        boolean arrayModified = false;
+
+        for (int i = 0; i < arr.size(); i++) {
+            COSBase item = arr.get(i);
+            if (item instanceof COSNumber num) {
+                float tx = -num.floatValue() / 1000.0f * fontSize * scale;
+                if (textMatrix != null) {
+                    textMatrix.concatenate(new Matrix(1, 0, 0, 1, tx, 0));
+                }
+                if (keptBytes.size() > 0) {
+                    result.add(new COSString(keptBytes.toByteArray()));
+                    keptBytes.reset();
+                }
+                float totalNum = num.floatValue() + accumulatedAdjustment;
+                accumulatedAdjustment = 0f;
+                result.add(new COSFloat(totalNum));
+            } else if (item instanceof COSString cosStr) {
+                byte[] bytes = cosStr.getBytes();
+                try {
+                    if (font instanceof PDType0Font type0) {
+                        InputStream in = new ByteArrayInputStream(bytes);
+                        while (in.available() > 0) {
+                            int before = in.available();
+                            int code = type0.readCode(in);
+                            int after = in.available();
+                            int codeLen = before - after;
+                            float charW = (type0.getWidth(code) / 1000.0f) * fontSize * scale;
+
+                            Matrix trm = (textMatrix != null ? textMatrix : new Matrix()).multiply(ctm);
+                            float curX = trm.getTranslateX();
+                            float curY = trm.getTranslateY();
+
+                            if (isInsideMatches(curX, curY, charW, matches, pageH, originX, originY)) {
+                                arrayModified = true;
+                                if (keptBytes.size() > 0) {
+                                    result.add(new COSString(keptBytes.toByteArray()));
+                                    keptBytes.reset();
+                                }
+                                float disp = -(charW / (fontSize * scale) * 1000.0f);
+                                accumulatedAdjustment += disp;
+                            } else {
+                                if (accumulatedAdjustment != 0) {
+                                    result.add(new COSFloat(accumulatedAdjustment));
+                                    accumulatedAdjustment = 0f;
+                                }
+                                int offset = bytes.length - before;
+                                keptBytes.write(bytes, offset, codeLen);
+                            }
+
+                            if (textMatrix != null) {
+                                textMatrix.concatenate(new Matrix(1, 0, 0, 1, charW, 0));
+                            }
+                        }
+                    } else {
+                        for (byte b : bytes) {
+                            int code = b & 0xFF;
+                            float charW = (font != null ? font.getWidth(code) : 500f) / 1000.0f * fontSize * scale;
+
+                            Matrix trm = (textMatrix != null ? textMatrix : new Matrix()).multiply(ctm);
+                            float curX = trm.getTranslateX();
+                            float curY = trm.getTranslateY();
+
+                            if (isInsideMatches(curX, curY, charW, matches, pageH, originX, originY)) {
+                                arrayModified = true;
+                                if (keptBytes.size() > 0) {
+                                    result.add(new COSString(keptBytes.toByteArray()));
+                                    keptBytes.reset();
+                                }
+                                float disp = -(charW / (fontSize * scale) * 1000.0f);
+                                accumulatedAdjustment += disp;
+                            } else {
+                                if (accumulatedAdjustment != 0) {
+                                    result.add(new COSFloat(accumulatedAdjustment));
+                                    accumulatedAdjustment = 0f;
+                                }
+                                keptBytes.write(b);
+                            }
+
+                            if (textMatrix != null) {
+                                textMatrix.concatenate(new Matrix(1, 0, 0, 1, charW, 0));
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    Matrix trm = (textMatrix != null ? textMatrix : new Matrix()).multiply(ctm);
+                    float curX = trm.getTranslateX();
+                    float curY = trm.getTranslateY();
+                    float totalW = bytes.length * fontSize * 0.5f * scale;
+                    if (isInsideMatches(curX, curY, totalW, matches, pageH, originX, originY)) {
+                        arrayModified = true;
+                        if (keptBytes.size() > 0) {
+                            result.add(new COSString(keptBytes.toByteArray()));
+                            keptBytes.reset();
+                        }
+                        float disp = -(totalW / (fontSize * scale) * 1000.0f);
+                        accumulatedAdjustment += disp;
+                    } else {
+                        if (accumulatedAdjustment != 0) {
+                            result.add(new COSFloat(accumulatedAdjustment));
+                            accumulatedAdjustment = 0f;
+                        }
+                        keptBytes.writeBytes(bytes);
+                    }
+                    if (textMatrix != null) {
+                        textMatrix.concatenate(new Matrix(1, 0, 0, 1, totalW, 0));
+                    }
+                }
+            }
+        }
+
+        if (keptBytes.size() > 0) {
+            if (accumulatedAdjustment != 0) {
+                result.add(new COSFloat(accumulatedAdjustment));
+                accumulatedAdjustment = 0f;
+            }
+            result.add(new COSString(keptBytes.toByteArray()));
+        } else if (accumulatedAdjustment != 0) {
+            result.add(new COSFloat(accumulatedAdjustment));
+        }
+
+        if (!arrayModified) {
+            return null;
+        }
+        return result;
+    }
+
+    private boolean isInsideMatches(float curX, float curY, float width, List<Match> matches,
+                                    float pageH, float originX, float originY) {
+        float tol = 4.0f;
+        float rightX = curX + width;
+        for (Match m : matches) {
+            if (m.getLineBboxes() != null && !m.getLineBboxes().isEmpty()) {
+                for (double[] box : m.getLineBboxes()) {
+                    if (boxOverlaps(curX, rightX, curY, box, pageH, originX, originY, tol)) return true;
+                }
+            }
+            if (m.getBbox() != null && m.getBbox().length >= 4) {
+                if (boxOverlaps(curX, rightX, curY, m.getBbox(), pageH, originX, originY, tol)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean boxOverlaps(float curX, float rightX, float curY, double[] box,
+                                float pageH, float originX, float originY, float tol) {
+        float boxX = (float) box[0];
+        float boxY = (float) box[1];
+        float boxW = (float) box[2];
+        float boxH = (float) box[3];
+
+        float pdfMinX = originX + boxX - tol;
+        float pdfMaxX = originX + boxX + boxW + tol;
+        float pdfMinY = originY + (pageH - boxY - boxH) - tol;
+        float pdfMaxY = originY + (pageH - boxY) + tol;
+
+        if (curY < pdfMinY || curY > pdfMaxY) return false;
+        return Math.max(curX, pdfMinX) < Math.min(rightX, pdfMaxX);
+    }
+
+    private float getFloatOperand(Object obj) {
+        if (obj instanceof COSNumber n) {
+            return n.floatValue();
+        }
+        return 0f;
     }
 
     private void deepScrubRawStreams(PDDocument doc, List<Match> matches) {

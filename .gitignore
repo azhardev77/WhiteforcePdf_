@@ -27,3 +27,5 @@ Thumbs.db
 *.zip
 tender_redacted_export.pdf
 
+postman/
+.postman/
