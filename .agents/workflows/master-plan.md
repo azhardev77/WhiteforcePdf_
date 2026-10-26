@@ -48,7 +48,7 @@ c) Validate input: magic bytes %PDF, loadable by PDFBox, max size (configurable)
 d) Tests for: create/read, wrong key, expired session, non-PDF, oversized, cross-client access.
 
 PHASE 3 - RULES ENGINE + RESUME HIDING (backend)
-a) interface RuleSet { List<Match> find(DocumentModel doc); } with ResumeRules, TenderRules (empty for now), EditRules (empty).
+a) fixtures/ must contain every PDF listed in EXPECTED.txt (filename | email | phone). These are fake-data resumes generated with LibreOffice, pdflatex, xelatex and reportlab; real Word/Google Docs/Canva exports will be added later. Use EXPECTED.txt as the source of truth. STOP and ask me only if a listed file is missing, or if the only fixture is the 1056-byte toy resume.pdf.
 b) Port frontend/src/utils/piiRedactor.js to Java as PiiDetector. Read that file and replicate its regexes AND false-positive filters exactly (date ranges like "Feb 2026 - Present", "2020 - 2024", years, percentages, icon prefixes). Write parity tests using the same inputs plus +91 numbers, numbers split with spaces/dashes, emails with icons.
 c) Matches can span multiple text runs/lines: map character offsets to run bboxes and emit one box per run/line. Reuse how the frontend computes PII boxes if it already does.
 d) Pipeline for RESUME: extract -> RuleSet -> TextRedactionEdit (empty replacement) -> PdfRedactionService.redactAndReplace -> save result. Applied automatically at session creation for both UPLOAD and API sources.
@@ -56,6 +56,12 @@ e) If the PDF has no extractable text (scanned/image-only), RESUME must return a
 f) MANDATORY verification test, on sample-pdfs/resume.pdf AND every PDF in backend/src/test/resources/fixtures/ (real resumes from Word, Google Docs, Canva, LaTeX that I will add; if the folder is empty, STOP and ask me): (1) extract text from the output with PDFTextStripper and assert no email/phone remains, (2) scan raw content streams for the strings, (3) assert page count/size unchanged, (4) assert all non-PII text is unchanged. If the text is still recoverable anywhere, the phase FAILS - fix the redaction, do not paint over it.
 g) Also remove mailto:/tel: and other link annotations containing a matched email/phone, scrub the same values from document Info and XMP metadata, and handle text inside Form XObjects, TJ arrays and hex-encoded fonts. The verification must check annotations and metadata too.
 h) Document honestly any case that cannot be handled (e.g. PII inside images).
+PHASE 3B - REAL-WORLD VERIFICATION OF RESUME HIDING (no new features)
+a) fixtures/ must contain real resumes (Word, Google Docs, Canva, LaTeX) plus EXPECTED.txt (filename | email | phone). If any is missing, or only the 1056-byte toy resume.pdf exists, STOP and ask me.
+b) For EACH fixture, create a RESUME session through POST /app/sessions and check the OUTPUT PDF: (1) PDFTextStripper finds no email/phone, including digits-only and spaced/dashed variants; (2) pdfjs getTextContent (node script) finds none; (3) no mailto:/tel: link annotations; (4) Info and XMP metadata clean; (5) page count and size unchanged; (6) non-PII text unchanged; (7) render page 1 to PNG in a temp folder and list the path.
+c) Report PASS/FAIL per fixture with the exact failing evidence. If a fixture fails, fix only what the failure shows. Fonts whose Tj operands are glyph IDs (Identity-H/CID) cannot be matched by string; use position-based removal (text matrix inside the match bbox). Report every change.
+Scope: you may change ResumeRedactionService and classes under rules/. If PdfRedactionService (shared with legacy export) must change, STOP and show me the proposed diff first.
+d) Never weaken, skip or delete a fixture. One failing fixture = the phase FAILS.
 
 PHASE 4 - FRONTEND HOME + ROUTES
 a) New HomeView at "/" with three main buttons: Resume, Tender, Edit PDF, plus a secondary "API access" card (docs + sample curl). Routes: /resume, /tender, /edit, /edit/:sessionId. Keep the current editor reachable at /editor and update verify-e2e.cjs to use /editor ONLY if needed; it must still pass unchanged otherwise.
@@ -73,3 +79,6 @@ PHASE 6 - AUTO CLEANUP
 
 PHASE 7 - TENDER RULES
 Do not start. Wait for me to provide a sample tender PDF and the list of fields to hide.
+
+PHASE 8 - REMOVE THE KEY FROM THE BROWSER (required before any public deployment)
+VITE_API_KEY is currently embedded in the public JS bundle. Move every endpoint the browser uses (extract, export/redact, redact-json, samples) behind session-scoped /app/sessions/{id}/... routes authorized by the unguessable session id, then delete VITE_API_KEY from the frontend. /api/\*\* stays API-key only, for external clients. Add a test proving the built bundle contains no key. verify-e2e.cjs must still pass.
