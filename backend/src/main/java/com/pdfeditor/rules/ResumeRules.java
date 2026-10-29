@@ -1,5 +1,6 @@
 package com.pdfeditor.rules;
 
+import com.pdfeditor.export.TextRedactionEdit;
 import com.pdfeditor.model.Block;
 import com.pdfeditor.model.DocumentModel;
 import com.pdfeditor.model.HeadingBlock;
@@ -7,6 +8,7 @@ import com.pdfeditor.model.ImageBlock;
 import com.pdfeditor.model.ListBlock;
 import com.pdfeditor.model.PageModel;
 import com.pdfeditor.model.ParagraphBlock;
+import com.pdfeditor.model.Style;
 import com.pdfeditor.model.TableBlock;
 import com.pdfeditor.model.TextRun;
 import org.springframework.stereotype.Component;
@@ -153,6 +155,99 @@ public class ResumeRules implements RuleSet {
         }
 
         return allMatches;
+    }
+
+    public record ReplacementMatch(List<TextRedactionEdit> edits, int matchCount) {}
+
+    /**
+     * Reuses the exact same document model text extraction and block locator
+     * to find arbitrary text occurrences and map them to block-level TextRedactionEdits.
+     */
+    public ReplacementMatch findTextReplacementEdits(DocumentModel doc, String findText, String replaceText) {
+        if (doc == null || doc.getPages() == null || doc.getPages().isEmpty() || findText == null || findText.isEmpty()) {
+            return new ReplacementMatch(Collections.emptyList(), 0);
+        }
+
+        List<TextRedactionEdit> edits = new ArrayList<>();
+        int totalOccurrences = 0;
+
+        for (PageModel page : doc.getPages()) {
+            int pageNumber = page.getPageNumber();
+            List<Block> rawBlocks = page.getBlocks();
+            if (rawBlocks == null || rawBlocks.isEmpty()) {
+                continue;
+            }
+
+            List<TextBlockWrapper> textBlocks = extractTextBlocks(rawBlocks);
+
+            for (TextBlockWrapper tb : textBlocks) {
+                List<TextRun> runs = tb.runs;
+                if (runs == null || runs.isEmpty()) {
+                    continue;
+                }
+
+                StringBuilder fullText = new StringBuilder();
+                for (int i = 0; i < runs.size(); i++) {
+                    TextRun run = runs.get(i);
+                    String rText = run.getText() != null ? run.getText() : "";
+                    if (i > 0 && !fullText.isEmpty() && !fullText.toString().endsWith(" ") && !rText.startsWith(" ")) {
+                        fullText.append(" ");
+                    }
+                    fullText.append(rText);
+                }
+
+                String blockText = fullText.toString();
+                if (!blockText.contains(findText)) {
+                    continue;
+                }
+
+                // Count occurrences in this block
+                int countInBlock = 0;
+                int idx = 0;
+                while ((idx = blockText.indexOf(findText, idx)) != -1) {
+                    countInBlock++;
+                    idx += findText.length();
+                }
+                totalOccurrences += countInBlock;
+
+                String updatedBlockText = blockText.replace(findText, replaceText != null ? replaceText : "");
+
+                Style matchedStyle = null;
+                List<double[]> lineBoxes = new ArrayList<>();
+                for (TextRun run : runs) {
+                    if (run.getText() != null && run.getText().contains(findText)) {
+                        if (matchedStyle == null && run.getStyle() != null) {
+                            matchedStyle = run.getStyle();
+                        }
+                    }
+                    if (run.getBbox() != null && run.getBbox().length >= 4) {
+                        lineBoxes.add(run.getBbox().clone());
+                    }
+                }
+
+                if (matchedStyle == null && !runs.isEmpty() && runs.get(0).getStyle() != null) {
+                    matchedStyle = runs.get(0).getStyle();
+                }
+
+                if (lineBoxes.isEmpty() && tb.blockBbox != null && tb.blockBbox.length >= 4) {
+                    lineBoxes.add(tb.blockBbox.clone());
+                }
+
+                double[] targetBbox = tb.blockBbox != null ? tb.blockBbox.clone() : new double[]{0, 0, 0, 0};
+                TextRedactionEdit edit = new TextRedactionEdit(
+                        pageNumber,
+                        targetBbox,
+                        blockText,
+                        updatedBlockText,
+                        matchedStyle,
+                        "#FFFFFF"
+                );
+                edit.setWhiteoutBoxes(lineBoxes);
+                edits.add(edit);
+            }
+        }
+
+        return new ReplacementMatch(edits, totalOccurrences);
     }
 
     private List<TextBlockWrapper> extractTextBlocks(List<Block> blocks) {
