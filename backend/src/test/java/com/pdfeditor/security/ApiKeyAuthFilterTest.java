@@ -101,4 +101,16 @@ class ApiKeyAuthFilterTest {
                 .andExpect(header().string("Access-Control-Allow-Origin", "http://attacker.example.com"))
                 .andExpect(jsonPath("$.status", is(401)));
     }
+
+    @Test
+    @DisplayName("Should return 401 with CORS headers when X-API-KEY is missing on cross-origin request")
+    void shouldReturn401WithCorsHeadersWhenApiKeyMissingOnCrossOriginRequest() throws Exception {
+        mockMvc.perform(post("/api/documents/extract-sample")
+                        .header("Origin", "http://localhost:5173")
+                        .param("filename", "sample.pdf"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:5173"))
+                .andExpect(header().string("Access-Control-Allow-Credentials", "true"))
+                .andExpect(jsonPath("$.status", is(401)));
+    }
 }

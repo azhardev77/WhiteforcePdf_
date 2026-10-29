@@ -1,9 +1,7 @@
-import axios from 'axios';
-
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+import api from './http';
 
 /**
- * Creates an app session via POST /app/sessions (no API key required).
+ * Creates an app session via POST /app/sessions.
  *
  * @param {File|Blob} file - PDF file to upload
  * @param {string} mode - Processing mode (RESUME, TENDER, EDIT, MARK)
@@ -14,7 +12,7 @@ export async function createAppSession(file, mode = 'EDIT') {
   formData.append('file', file);
   formData.append('mode', mode);
 
-  const response = await axios.post(`${BASE_URL}/app/sessions`, formData, {
+  const response = await api.post('/app/sessions', formData, {
     headers: {
       'Content-Type': 'multipart/form-data'
     }
@@ -30,7 +28,7 @@ export async function createAppSession(file, mode = 'EDIT') {
  * @returns {Promise<{ arrayBuffer: ArrayBuffer, mode: string|null, source: string|null }>}
  */
 export async function fetchAppSessionPdf(sessionId) {
-  const response = await axios.get(`${BASE_URL}/app/sessions/${encodeURIComponent(sessionId)}/pdf`, {
+  const response = await api.get(`/app/sessions/${encodeURIComponent(sessionId)}/pdf`, {
     responseType: 'arraybuffer'
   });
 
@@ -52,6 +50,6 @@ export async function fetchAppSessionPdf(sessionId) {
  * @returns {Promise<{ id: string, mode: string, source: string, status: string, expiresAt: string }>}
  */
 export async function fetchAppSessionInfo(sessionId) {
-  const response = await axios.get(`${BASE_URL}/app/sessions/${encodeURIComponent(sessionId)}`);
+  const response = await api.get(`/app/sessions/${encodeURIComponent(sessionId)}`);
   return response.data;
 }
