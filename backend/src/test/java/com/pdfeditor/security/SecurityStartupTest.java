@@ -38,4 +38,20 @@ class SecurityStartupTest {
                     assertThat(filter.getExpectedApiKey()).isEqualTo("test_valid_key_123");
                 });
     }
+
+    @Test
+    @DisplayName("Application startup fails when UI_API_KEY equals API_KEY")
+    void shouldFailStartupWhenUiApiKeyEqualsApiKey() {
+        contextRunner
+                .withPropertyValues(
+                        "app.security.api-key=same_secret_key_123",
+                        "app.security.ui-api-key=same_secret_key_123"
+                )
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasRootCauseInstanceOf(IllegalStateException.class)
+                            .hasRootCauseMessage("UI_API_KEY must not be equal to API_KEY.");
+                });
+    }
 }

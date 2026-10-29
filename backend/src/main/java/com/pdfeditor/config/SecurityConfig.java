@@ -31,12 +31,15 @@ public class SecurityConfig {
         }
         if (uiApiKey == null || uiApiKey.trim().isEmpty()) {
             log.warn("UI_API_KEY is not set");
+        } else if (uiApiKey.trim().equals(apiKey.trim())) {
+            throw new IllegalStateException("UI_API_KEY must not be equal to API_KEY.");
         }
     }
 
     @Bean
     public ApiKeyAuthFilter apiKeyAuthFilter(ObjectMapper objectMapper) {
-        return new ApiKeyAuthFilter(apiKey, uiApiKey, headerName, objectMapper);
+        String effectiveUiKey = (uiApiKey != null && !uiApiKey.trim().isEmpty()) ? uiApiKey : apiKey;
+        return new ApiKeyAuthFilter(apiKey, effectiveUiKey, headerName, objectMapper);
     }
 
     @Bean

@@ -33,7 +33,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
     private final ObjectMapper objectMapper;
 
     public ApiKeyAuthFilter(String expectedApiKey, String headerName, ObjectMapper objectMapper) {
-        this(expectedApiKey, null, headerName, objectMapper);
+        this(expectedApiKey, expectedApiKey, headerName, objectMapper);
     }
 
     public ApiKeyAuthFilter(String expectedApiKey, String expectedUiApiKey, String headerName, ObjectMapper objectMapper) {
@@ -83,22 +83,19 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             providedApiKey = providedApiKey.trim();
         }
 
+        // Determine which key is required based on request path:
+        // /api/v1/** accepts ONLY expectedApiKey (EXTERNAL).
+        // Otherwise accepts ONLY expectedUiApiKey (UI).
+        String path = request.getRequestURI();
+        String targetKey = (path != null && path.startsWith("/api/v1/")) ? expectedApiKey : expectedUiApiKey;
+
         // Validate key using constant-time comparison
         boolean keyMatches = false;
-        if (providedApiKey != null) {
-            byte[] providedBytes = providedApiKey.getBytes(StandardCharsets.UTF_8);
-            if (expectedApiKey != null && !expectedApiKey.isEmpty()) {
-                keyMatches = MessageDigest.isEqual(
-                        providedBytes,
-                        expectedApiKey.getBytes(StandardCharsets.UTF_8)
-                );
-            }
-            if (!keyMatches && expectedUiApiKey != null && !expectedUiApiKey.isEmpty()) {
-                keyMatches = MessageDigest.isEqual(
-                        providedBytes,
-                        expectedUiApiKey.getBytes(StandardCharsets.UTF_8)
-                );
-            }
+        if (providedApiKey != null && targetKey != null && !targetKey.isEmpty()) {
+            keyMatches = MessageDigest.isEqual(
+                    providedApiKey.getBytes(StandardCharsets.UTF_8),
+                    targetKey.getBytes(StandardCharsets.UTF_8)
+            );
         }
 
         if (!keyMatches) {
