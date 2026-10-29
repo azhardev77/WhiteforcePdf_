@@ -15,6 +15,7 @@ app:
   public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:5173}
   security:
     api-key: ${API_KEY:}
+    ui-api-key: ${UI_API_KEY:}
     header-name: X-API-KEY
   sessions:
     dir: ${APP_SESSIONS_DIR:target/sessions}

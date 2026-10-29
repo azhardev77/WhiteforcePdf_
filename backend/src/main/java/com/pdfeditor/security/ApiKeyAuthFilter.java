@@ -28,11 +28,17 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
     public static final String DEFAULT_HEADER_NAME = "X-API-KEY";
 
     private final String expectedApiKey;
+    private final String expectedUiApiKey;
     private final String headerName;
     private final ObjectMapper objectMapper;
 
     public ApiKeyAuthFilter(String expectedApiKey, String headerName, ObjectMapper objectMapper) {
+        this(expectedApiKey, null, headerName, objectMapper);
+    }
+
+    public ApiKeyAuthFilter(String expectedApiKey, String expectedUiApiKey, String headerName, ObjectMapper objectMapper) {
         this.expectedApiKey = (expectedApiKey != null) ? expectedApiKey.trim() : "";
+        this.expectedUiApiKey = (expectedUiApiKey != null) ? expectedUiApiKey.trim() : "";
         this.headerName = (headerName != null && !headerName.isBlank()) ? headerName.trim() : DEFAULT_HEADER_NAME;
         this.objectMapper = (objectMapper != null) ? objectMapper : new ObjectMapper();
     }
@@ -79,11 +85,20 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
 
         // Validate key using constant-time comparison
         boolean keyMatches = false;
-        if (providedApiKey != null && expectedApiKey != null && !expectedApiKey.isEmpty()) {
-            keyMatches = MessageDigest.isEqual(
-                    providedApiKey.getBytes(StandardCharsets.UTF_8),
-                    expectedApiKey.getBytes(StandardCharsets.UTF_8)
-            );
+        if (providedApiKey != null) {
+            byte[] providedBytes = providedApiKey.getBytes(StandardCharsets.UTF_8);
+            if (expectedApiKey != null && !expectedApiKey.isEmpty()) {
+                keyMatches = MessageDigest.isEqual(
+                        providedBytes,
+                        expectedApiKey.getBytes(StandardCharsets.UTF_8)
+                );
+            }
+            if (!keyMatches && expectedUiApiKey != null && !expectedUiApiKey.isEmpty()) {
+                keyMatches = MessageDigest.isEqual(
+                        providedBytes,
+                        expectedUiApiKey.getBytes(StandardCharsets.UTF_8)
+                );
+            }
         }
 
         if (!keyMatches) {
@@ -127,6 +142,10 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
 
     public String getExpectedApiKey() {
         return expectedApiKey;
+    }
+
+    public String getExpectedUiApiKey() {
+        return expectedUiApiKey;
     }
 
     public String getHeaderName() {
