@@ -1,16 +1,36 @@
 import api from './http';
 
 /**
+ * Fetches available redaction categories from GET /app/redaction-categories.
+ *
+ * @returns {Promise<Array<{ id: string, label: string, default: boolean }>>}
+ */
+export async function fetchRedactionCategories() {
+  const response = await api.get('/app/redaction-categories');
+  return response.data;
+}
+
+/**
  * Creates an app session via POST /app/sessions.
  *
  * @param {File|Blob} file - PDF file to upload
  * @param {string} mode - Processing mode (RESUME, TENDER, EDIT, MARK)
+ * @param {Array<string>|null} [redactCategories=null] - Optional list of category IDs to redact
  * @returns {Promise<{ id: string }>}
  */
-export async function createAppSession(file, mode = 'EDIT') {
+export async function createAppSession(file, mode = 'EDIT', redactCategories = null) {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('mode', mode);
+  if (redactCategories !== null && Array.isArray(redactCategories)) {
+    if (redactCategories.length === 0) {
+      formData.append('redact', '');
+    } else {
+      for (const cat of redactCategories) {
+        formData.append('redact', cat);
+      }
+    }
+  }
 
   const response = await api.post('/app/sessions', formData, {
     headers: {

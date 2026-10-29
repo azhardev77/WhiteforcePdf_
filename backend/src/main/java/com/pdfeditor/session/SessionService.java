@@ -11,6 +11,7 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -46,10 +47,14 @@ public class SessionService {
     }
 
     public PdfSession createSession(MultipartFile file, Mode mode, Source source, String clientId) throws IOException {
+        return createSession(file, mode, source, clientId, null);
+    }
+
+    public PdfSession createSession(MultipartFile file, Mode mode, Source source, String clientId, List<String> redactCategories) throws IOException {
         byte[] validPdfBytes = sessionValidator.validate(file);
 
         if (mode == Mode.RESUME && resumeRedactionService != null) {
-            validPdfBytes = resumeRedactionService.redactResume(validPdfBytes);
+            validPdfBytes = resumeRedactionService.redactResume(validPdfBytes, redactCategories);
         }
 
         String sessionId = generateSessionId();

@@ -180,6 +180,98 @@ class SessionResumeModeTest {
     }
 
     @Test
+    @DisplayName("POST /app/sessions with redact=email only redacts email and keeps phone intact")
+    void testAppSessionSubsetRedactEmailOnly() throws Exception {
+        File resumeFile = new File("../sample-pdfs/resume.pdf");
+        if (!resumeFile.exists()) {
+            resumeFile = new File("sample-pdfs/resume.pdf");
+        }
+        assertThat(resumeFile).exists();
+        byte[] resumeBytes = Files.readAllBytes(resumeFile.toPath());
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("file", new ByteArrayResource(resumeBytes) {
+            @Override
+            public String getFilename() {
+                return "resume.pdf";
+            }
+        });
+        body.add("mode", "RESUME");
+        body.add("redact", "email");
+
+        HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
+        ResponseEntity<Map> response = restTemplate.postForEntity(getBaseUrl() + "/app/sessions", requestEntity, Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String sessionId = (String) response.getBody().get("id");
+
+        ResponseEntity<byte[]> pdfResponse = restTemplate.getForEntity(
+                getBaseUrl() + "/app/sessions/" + sessionId + "/pdf",
+                byte[].class
+        );
+        assertThat(pdfResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        try (PDDocument doc = Loader.loadPDF(pdfResponse.getBody())) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extracted = stripper.getText(doc);
+            // Email is stripped
+            assertThat(extracted).doesNotContain("azharmansoori725@gmail.com");
+            // Phone is NOT stripped
+            assertThat(extracted).contains("+91-7747047876");
+            assertThat(extracted).contains("Mohd Azhar Mansoori");
+        }
+    }
+
+    @Test
+    @DisplayName("POST /app/sessions with redact=phone only redacts phone and keeps email intact")
+    void testAppSessionSubsetRedactPhoneOnly() throws Exception {
+        File resumeFile = new File("../sample-pdfs/resume.pdf");
+        if (!resumeFile.exists()) {
+            resumeFile = new File("sample-pdfs/resume.pdf");
+        }
+        assertThat(resumeFile).exists();
+        byte[] resumeBytes = Files.readAllBytes(resumeFile.toPath());
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("file", new ByteArrayResource(resumeBytes) {
+            @Override
+            public String getFilename() {
+                return "resume.pdf";
+            }
+        });
+        body.add("mode", "RESUME");
+        body.add("redact", "phone");
+
+        HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
+        ResponseEntity<Map> response = restTemplate.postForEntity(getBaseUrl() + "/app/sessions", requestEntity, Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String sessionId = (String) response.getBody().get("id");
+
+        ResponseEntity<byte[]> pdfResponse = restTemplate.getForEntity(
+                getBaseUrl() + "/app/sessions/" + sessionId + "/pdf",
+                byte[].class
+        );
+        assertThat(pdfResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        try (PDDocument doc = Loader.loadPDF(pdfResponse.getBody())) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extracted = stripper.getText(doc);
+            // Email is NOT stripped
+            assertThat(extracted).contains("azharmansoori725@gmail.com");
+            // Phone is stripped
+            assertThat(extracted).doesNotContain("+91-7747047876");
+            assertThat(extracted).contains("Mohd Azhar Mansoori");
+        }
+    }
+
+    @Test
     @DisplayName("POST /app/sessions with mode=RESUME on scanned PDF returns 422 Unprocessable Entity")
     void testAppSessionScannedPdfReturns422() throws IOException {
         byte[] scannedPdf;

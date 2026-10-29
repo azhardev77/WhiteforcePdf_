@@ -3,6 +3,7 @@ package com.pdfeditor.session;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pdfeditor.config.CorsConfig;
 import com.pdfeditor.config.SecurityConfig;
+import com.pdfeditor.rules.RedactionCategoryRegistry;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
@@ -36,7 +37,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(controllers = SessionController.class)
-@Import({SecurityConfig.class, CorsConfig.class, SessionService.class, SessionValidator.class, SessionRateLimiter.class, SessionProperties.class})
+@Import({SecurityConfig.class, CorsConfig.class, SessionService.class, SessionValidator.class, SessionRateLimiter.class, SessionProperties.class, RedactionCategoryRegistry.class})
 @TestPropertySource(properties = {
         "app.security.api-key=test_secret_api_key_xyz",
         "app.security.header-name=X-API-KEY",
@@ -321,6 +322,43 @@ class SessionControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status", is(400)))
                 .andExpect(jsonPath("$.message", containsString("Invalid mode")));
+    }
+
+    @Test
+    @DisplayName("GET /app/redaction-categories returns registered categories")
+    void testGetRedactionCategories() throws Exception {
+        mockMvc.perform(get("/app/redaction-categories"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[0].id", is("email")))
+                .andExpect(jsonPath("$[0].label", is("Email Addresses")))
+                .andExpect(jsonPath("$[0].default", is(true)))
+                .andExpect(jsonPath("$[1].id", is("phone")))
+                .andExpect(jsonPath("$[1].label", is("Phone Numbers")))
+                .andExpect(jsonPath("$[1].default", is(true)));
+    }
+
+    @Test
+    @DisplayName("POST /app/sessions and /api/v1/sessions reject unknown redaction category with 400")
+    void testUnknownRedactionCategoryRejection() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "test.pdf", "application/pdf", samplePdfBytes);
+
+        mockMvc.perform(multipart("/app/sessions")
+                        .file(file)
+                        .param("mode", "RESUME")
+                        .param("redact", "invalid_cat"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status", is(400)))
+                .andExpect(jsonPath("$.message", containsString("Unknown redaction category: 'invalid_cat'")));
+
+        mockMvc.perform(multipart("/api/v1/sessions")
+                        .file(file)
+                        .param("mode", "RESUME")
+                        .param("redact", "unknown_one")
+                        .header("X-API-KEY", "test_secret_api_key_xyz"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status", is(400)))
+                .andExpect(jsonPath("$.message", containsString("Unknown redaction category: 'unknown_one'")));
     }
 
     private byte[] createSamplePdf(String text) throws IOException {

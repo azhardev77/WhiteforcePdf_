@@ -44,9 +44,13 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class ResumeRedactionService {
@@ -75,6 +79,10 @@ public class ResumeRedactionService {
      * 6. Deep scan raw content streams to guarantee zero residual PII strings remain.
      */
     public byte[] redactResume(byte[] originalPdfBytes) throws IOException {
+        return redactResume(originalPdfBytes, null);
+    }
+
+    public byte[] redactResume(byte[] originalPdfBytes, Collection<String> selectedCategoryIds) throws IOException {
         if (originalPdfBytes == null || originalPdfBytes.length == 0) {
             throw new IllegalArgumentException("PDF bytes cannot be empty");
         }
@@ -82,12 +90,39 @@ public class ResumeRedactionService {
         // Step 1: Validate extractable text
         validateExtractableText(originalPdfBytes);
 
+        // If categories is explicitly empty, user selected nothing to redact
+        if (selectedCategoryIds != null && selectedCategoryIds.isEmpty()) {
+            return originalPdfBytes;
+        }
+
+        Set<String> categorySet = null;
+        if (selectedCategoryIds != null) {
+            categorySet = selectedCategoryIds.stream()
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .map(String::toLowerCase)
+                    .collect(Collectors.toSet());
+        }
+
         // Step 2: Extract DocumentModel
         DocumentModel docModel = extractionPipeline.extract(originalPdfBytes, "resume.pdf");
 
         // Step 3: Run ResumeRules
-        List<Match> matches = resumeRules.find(docModel);
-        if (matches == null || matches.isEmpty()) {
+        List<Match> allMatches = resumeRules.find(docModel);
+        if (allMatches == null || allMatches.isEmpty()) {
+            return originalPdfBytes;
+        }
+
+        // Filter matches by categorySet (if null, all categories match)
+        List<Match> matches = new ArrayList<>();
+        for (Match match : allMatches) {
+            String type = match.getType() != null ? match.getType().trim().toLowerCase() : "";
+            if (categorySet == null || categorySet.contains(type)) {
+                matches.add(match);
+            }
+        }
+
+        if (matches.isEmpty()) {
             return originalPdfBytes;
         }
 
@@ -112,16 +147,16 @@ public class ResumeRedactionService {
         // Step 6: Post-process document for complete link, metadata, and content stream eradication
         try (PDDocument doc = Loader.loadPDF(redactedBytes)) {
             // Remove mailto:/tel: and matching link annotations
-            scrubAnnotations(doc, matches);
+            scrubAnnotations(doc, matches, categorySet);
 
             // Scrub Document Information and XMP metadata
-            scrubMetadata(doc, matches);
+            scrubMetadata(doc, matches, categorySet);
 
             // Scrub content stream tokens (Tj, TJ, Form XObjects)
             scrubAllContentStreams(doc, matches);
 
             // Deep scan raw content stream bytes for any remaining strings
-            deepScrubRawStreams(doc, matches);
+            deepScrubRawStreams(doc, matches, categorySet);
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             doc.save(baos);
@@ -139,7 +174,9 @@ public class ResumeRedactionService {
         }
     }
 
-    private void scrubAnnotations(PDDocument doc, List<Match> matches) {
+    private void scrubAnnotations(PDDocument doc, List<Match> matches, Set<String> categorySet) {
+        boolean scrubEmail = categorySet == null || categorySet.contains("email");
+        boolean scrubPhone = categorySet == null || categorySet.contains("phone");
         for (PDPage page : doc.getPages()) {
             try {
                 List<PDAnnotation> annotations = page.getAnnotations();
@@ -154,8 +191,16 @@ public class ResumeRedactionService {
                             String uri = uriAction.getURI();
                             if (uri != null) {
                                 String lower = uri.toLowerCase();
-                                if (lower.startsWith("mailto:") || lower.startsWith("tel:")
-                                        || PiiDetector.hasPII(uri)
+                                boolean hasMatchingPii = false;
+                                for (PiiDetector.PiiSpan span : PiiDetector.findPIISpans(uri)) {
+                                    if (categorySet == null || categorySet.contains(span.getType().toLowerCase())) {
+                                        hasMatchingPii = true;
+                                        break;
+                                    }
+                                }
+                                if ((scrubEmail && lower.startsWith("mailto:"))
+                                        || (scrubPhone && lower.startsWith("tel:"))
+                                        || hasMatchingPii
                                         || matchesAnyPii(uri, matches)) {
                                     shouldRemove = true;
                                 }
@@ -169,8 +214,16 @@ public class ResumeRedactionService {
                                 String uri = aDict.getString(COSName.URI);
                                 if (uri != null) {
                                     String lower = uri.toLowerCase();
-                                    if (lower.startsWith("mailto:") || lower.startsWith("tel:")
-                                            || PiiDetector.hasPII(uri)
+                                    boolean hasMatchingPii = false;
+                                    for (PiiDetector.PiiSpan span : PiiDetector.findPIISpans(uri)) {
+                                        if (categorySet == null || categorySet.contains(span.getType().toLowerCase())) {
+                                            hasMatchingPii = true;
+                                            break;
+                                        }
+                                    }
+                                    if ((scrubEmail && lower.startsWith("mailto:"))
+                                            || (scrubPhone && lower.startsWith("tel:"))
+                                            || hasMatchingPii
                                             || matchesAnyPii(uri, matches)) {
                                         shouldRemove = true;
                                     }
@@ -189,23 +242,32 @@ public class ResumeRedactionService {
         }
     }
 
-    private void scrubMetadata(PDDocument doc, List<Match> matches) {
+    private void scrubMetadata(PDDocument doc, List<Match> matches, Set<String> categorySet) {
         PDDocumentInformation info = doc.getDocumentInformation();
         if (info != null) {
-            info.setTitle(scrubPiiString(info.getTitle(), matches));
-            info.setAuthor(scrubPiiString(info.getAuthor(), matches));
-            info.setSubject(scrubPiiString(info.getSubject(), matches));
-            info.setKeywords(scrubPiiString(info.getKeywords(), matches));
-            info.setCreator(scrubPiiString(info.getCreator(), matches));
-            info.setProducer(scrubPiiString(info.getProducer(), matches));
+            info.setTitle(scrubPiiString(info.getTitle(), matches, categorySet));
+            info.setAuthor(scrubPiiString(info.getAuthor(), matches, categorySet));
+            info.setSubject(scrubPiiString(info.getSubject(), matches, categorySet));
+            info.setKeywords(scrubPiiString(info.getKeywords(), matches, categorySet));
+            info.setCreator(scrubPiiString(info.getCreator(), matches, categorySet));
+            info.setProducer(scrubPiiString(info.getProducer(), matches, categorySet));
 
             COSDictionary infoDict = info.getCOSObject();
             for (COSName key : infoDict.keySet()) {
                 COSBase val = infoDict.getItem(key);
                 if (val instanceof COSString cosStr) {
                     String s = cosStr.getString();
-                    if (PiiDetector.hasPII(s) || matchesAnyPii(s, matches)) {
-                        String scrubbed = scrubPiiString(s, matches);
+                    boolean hasTarget = matchesAnyPii(s, matches);
+                    if (!hasTarget) {
+                        for (PiiDetector.PiiSpan span : PiiDetector.findPIISpans(s)) {
+                            if (categorySet == null || categorySet.contains(span.getType().toLowerCase())) {
+                                hasTarget = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (hasTarget) {
+                        String scrubbed = scrubPiiString(s, matches, categorySet);
                         cosStr.setValue(scrubbed.getBytes(StandardCharsets.ISO_8859_1));
                     }
                 }
@@ -230,8 +292,10 @@ public class ResumeRedactionService {
                     }
                     List<PiiDetector.PiiSpan> spans = PiiDetector.findPIISpans(xml);
                     for (PiiDetector.PiiSpan span : spans) {
-                        xml = xml.replace(span.getMatch(), "");
-                        changed = true;
+                        if (categorySet == null || categorySet.contains(span.getType().toLowerCase())) {
+                            xml = xml.replace(span.getMatch(), "");
+                            changed = true;
+                        }
                     }
                     if (changed) {
                         metadata.importXMPMetadata(xml.getBytes(StandardCharsets.UTF_8));
@@ -654,7 +718,7 @@ public class ResumeRedactionService {
         return 0f;
     }
 
-    private void deepScrubRawStreams(PDDocument doc, List<Match> matches) {
+    private void deepScrubRawStreams(PDDocument doc, List<Match> matches, Set<String> categorySet) {
         for (PDPage page : doc.getPages()) {
             try {
                 Iterator<PDStream> iter = page.getContentStreams();
@@ -679,11 +743,13 @@ public class ResumeRedactionService {
                             }
                         }
 
-                        // Also find any emails or phones in content
+                        // Also find any matching category PII in content
                         List<PiiDetector.PiiSpan> spans = PiiDetector.findPIISpans(content);
                         for (PiiDetector.PiiSpan span : spans) {
-                            content = content.replace(span.getMatch(), "");
-                            modified = true;
+                            if (categorySet == null || categorySet.contains(span.getType().toLowerCase())) {
+                                content = content.replace(span.getMatch(), "");
+                                modified = true;
+                            }
                         }
 
                         if (modified) {
@@ -720,14 +786,19 @@ public class ResumeRedactionService {
         return false;
     }
 
-    private String scrubPiiString(String text, List<Match> matches) {
+    private String scrubPiiString(String text, List<Match> matches, Set<String> categorySet) {
         if (text == null || text.isBlank()) return text;
-        String scrubbed = PiiDetector.redactPIIFromText(text);
+        String scrubbed = text;
         if (matches != null) {
             for (Match m : matches) {
                 if (m.getMatchedText() != null && !m.getMatchedText().isBlank()) {
                     scrubbed = scrubbed.replace(m.getMatchedText().trim(), "");
                 }
+            }
+        }
+        for (PiiDetector.PiiSpan span : PiiDetector.findPIISpans(scrubbed)) {
+            if (categorySet == null || categorySet.contains(span.getType().toLowerCase())) {
+                scrubbed = scrubbed.replace(span.getMatch(), "");
             }
         }
         return scrubbed.trim();

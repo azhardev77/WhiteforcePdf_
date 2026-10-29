@@ -1,5 +1,7 @@
 package com.pdfeditor.session;
 
+import com.pdfeditor.rules.RedactionCategory;
+import com.pdfeditor.rules.RedactionCategoryRegistry;
 import com.pdfeditor.session.dto.AppSessionCreateResponse;
 import com.pdfeditor.session.dto.SessionCreateResponse;
 import jakarta.servlet.http.HttpServletRequest;
@@ -12,6 +14,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -20,26 +23,41 @@ public class SessionController {
 
     private final SessionService sessionService;
     private final SessionRateLimiter sessionRateLimiter;
+    private final RedactionCategoryRegistry redactionCategoryRegistry;
 
-    public SessionController(SessionService sessionService, SessionRateLimiter sessionRateLimiter) {
+    public SessionController(SessionService sessionService,
+                             SessionRateLimiter sessionRateLimiter,
+                             RedactionCategoryRegistry redactionCategoryRegistry) {
         this.sessionService = sessionService;
         this.sessionRateLimiter = sessionRateLimiter;
+        this.redactionCategoryRegistry = redactionCategoryRegistry;
+    }
+
+    /**
+     * GET /app/redaction-categories
+     * -> list of available redaction categories {id, label, default}
+     */
+    @GetMapping("/app/redaction-categories")
+    public ResponseEntity<List<RedactionCategory>> getRedactionCategories() {
+        return ResponseEntity.ok(redactionCategoryRegistry.getCategories());
     }
 
     /**
      * POST /api/v1/sessions [X-API-KEY]
-     * Multipart file + mode -> {id, editUrl, expiresAt}
+     * Multipart file + mode (+ optional redact category list) -> {id, editUrl, expiresAt}
      */
     @PostMapping(value = "/api/v1/sessions", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<SessionCreateResponse> createApiSession(
             @RequestParam("file") MultipartFile file,
             @RequestParam("mode") String modeStr,
+            @RequestParam(value = "redact", required = false) List<String> redactCategories,
             HttpServletRequest request) throws IOException {
 
         Mode mode = Mode.fromString(modeStr);
         String clientId = resolveClientId(request);
+        List<String> validatedCategories = redactionCategoryRegistry.parseCategoryIds(redactCategories);
 
-        PdfSession session = sessionService.createSession(file, mode, Source.API, clientId);
+        PdfSession session = sessionService.createSession(file, mode, Source.API, clientId, validatedCategories);
         String editUrl = sessionService.buildEditUrl(session.getId());
 
         SessionCreateResponse response = new SessionCreateResponse(
@@ -87,12 +105,13 @@ public class SessionController {
 
     /**
      * POST /app/sessions [no key, rate/size limited]
-     * Multipart file + mode -> {id}
+     * Multipart file + mode (+ optional redact category list) -> {id}
      */
     @PostMapping(value = "/app/sessions", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> createAppSession(
             @RequestParam("file") MultipartFile file,
             @RequestParam("mode") String modeStr,
+            @RequestParam(value = "redact", required = false) List<String> redactCategories,
             HttpServletRequest request) throws IOException {
 
         String clientIp = getClientIp(request);
@@ -103,7 +122,8 @@ public class SessionController {
         }
 
         Mode mode = Mode.fromString(modeStr);
-        PdfSession session = sessionService.createSession(file, mode, Source.UPLOAD, "upload");
+        List<String> validatedCategories = redactionCategoryRegistry.parseCategoryIds(redactCategories);
+        PdfSession session = sessionService.createSession(file, mode, Source.UPLOAD, "upload", validatedCategories);
 
         return ResponseEntity.status(HttpStatus.CREATED)
                 .contentType(MediaType.APPLICATION_JSON)
