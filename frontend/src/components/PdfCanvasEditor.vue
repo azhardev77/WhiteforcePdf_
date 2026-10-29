@@ -3643,7 +3643,7 @@ function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanva
         block.x = state.customX;
         block.y = state.customY;
       }
-    } else if (!autoRedactedBlockIds.has(block.id) && !isRestored) {
+    } else if (!autoRedactedBlockIds.has(block.id) && !isRestored && documentStore.sessionMode !== 'RESUME') {
       if (!block.isBlankLine && hasPII(block.text)) {
         const cleanedText = redactPIIFromText(block.text);
         if (cleanedText !== block.text) {
@@ -3666,7 +3666,7 @@ function extractParagraphBlocks(pageNumber, textContent, viewport, pristineCanva
   }
 
   // 5. Scan for tiny sibling icon boxes immediately to the left of redacted PII blocks
-  if (!isRestored) {
+  if (!isRestored && documentStore.sessionMode !== 'RESUME') {
     for (const piiBox of blocks) {
       if (!piiBox.isEdited || piiBox.isBlankLine) continue;
       const isPiiRedacted = hasPII(piiBox.originalText) || (piiBox.text === '' && autoRedactedBlockIds.has(piiBox.id));

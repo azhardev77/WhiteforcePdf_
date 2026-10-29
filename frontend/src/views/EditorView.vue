@@ -307,18 +307,27 @@
         <span>{{ exportToastMessage }}</span>
       </div>
     </transition>
+    <!-- Redaction Categories Selection Dialog (Resume Mode) -->
+    <RedactionCategoriesModal
+      v-if="showRedactDialog"
+      @confirm="handleRedactConfirm"
+      @cancel="cancelRedactDialog"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useDocumentStore } from '@/stores/document';
 import EditorToolbar from '@/components/EditorToolbar.vue';
 import PdfCanvasEditor from '@/components/PdfCanvasEditor.vue';
+import RedactionCategoriesModal from '@/components/RedactionCategoriesModal.vue';
 import sessionStorageService from '@/services/sessionStorageService';
+import { createAppSession } from '@/api/sessions';
 
 const route = useRoute();
+const router = useRouter();
 const documentStore = useDocumentStore();
 
 const isDragging = ref(false);
@@ -330,6 +339,8 @@ let toastTimer = null;
 const isRecentlySaved = ref(false);
 let saveStateTimer = null;
 const showCloseConfirmModal = ref(false);
+const showRedactDialog = ref(false);
+const pendingResumeFile = ref(null);
 
 function showExportToast(msg) {
   exportToastMessage.value = msg;
@@ -386,6 +397,45 @@ onBeforeUnmount(() => {
   sessionStorageService.clearActiveDocument(documentStore.fileKey).catch(() => {});
 });
 
+function isResumeFile(file) {
+  if (!file) return false;
+  const name = (file.name || '').toLowerCase();
+  return name.includes('resume') || documentStore.sessionMode === 'RESUME';
+}
+
+function cancelRedactDialog() {
+  showRedactDialog.value = false;
+  pendingResumeFile.value = null;
+}
+
+async function handleRedactConfirm(selectedCategories) {
+  showRedactDialog.value = false;
+  const file = pendingResumeFile.value;
+  pendingResumeFile.value = null;
+  if (!file) return;
+
+  try {
+    isHydrating.value = true;
+    if (canvasEditorRef.value?.purgeEditorState) {
+      canvasEditorRef.value.purgeEditorState();
+    }
+    await sessionStorageService.clearActiveDocument();
+    const result = await createAppSession(file, 'RESUME', selectedCategories);
+    if (!result?.id) {
+      throw new Error('Failed to obtain a session ID from backend.');
+    }
+    await documentStore.loadFromSession(result.id);
+    if (route?.params?.sessionId !== result.id) {
+      await router.replace(`/edit/${encodeURIComponent(result.id)}`);
+    }
+  } catch (err) {
+    console.error('Failed to create resume session:', err);
+    documentStore.errorMessage = err.response?.data?.message || err.message || 'Failed to initialize resume session.';
+  } finally {
+    isHydrating.value = false;
+  }
+}
+
 async function triggerOpenNewFile() {
   if (typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function') {
     try {
@@ -403,6 +453,11 @@ async function triggerOpenNewFile() {
         }
         const file = await handle.getFile();
         documentStore.fileHandle = handle;
+        if (isResumeFile(file)) {
+          pendingResumeFile.value = file;
+          showRedactDialog.value = true;
+          return;
+        }
         await documentStore.uploadAndExtract(file);
         return;
       }
@@ -462,7 +517,12 @@ async function handleFileDrop(event) {
       if (canvasEditorRef.value?.purgeEditorState) {
         canvasEditorRef.value.purgeEditorState();
       }
-      await uploadFile(file);
+      if (isResumeFile(file)) {
+        pendingResumeFile.value = file;
+        showRedactDialog.value = true;
+      } else {
+        await uploadFile(file);
+      }
     } else {
       documentStore.errorMessage = 'Please upload a valid PDF document (.pdf).';
     }
@@ -475,7 +535,13 @@ async function handleFileInput(event) {
     if (canvasEditorRef.value?.purgeEditorState) {
       canvasEditorRef.value.purgeEditorState();
     }
-    await uploadFile(files[0]);
+    const file = files[0];
+    if (isResumeFile(file)) {
+      pendingResumeFile.value = file;
+      showRedactDialog.value = true;
+    } else {
+      await uploadFile(file);
+    }
   }
   if (event.target) {
     event.target.value = '';
@@ -511,10 +577,15 @@ async function loadResumeDocument() {
     if (canvasEditorRef.value?.purgeEditorState) {
       canvasEditorRef.value.purgeEditorState();
     }
-    await sessionStorageService.clearActiveDocument();
-    await documentStore.loadSample('resume.pdf');
-  } catch {
-    // Error is set in store
+    const resp = await fetch('/samples/resume.pdf');
+    if (!resp.ok) throw new Error('Failed to load sample resume.');
+    const blob = await resp.blob();
+    const file = new File([blob], 'resume.pdf', { type: 'application/pdf' });
+    pendingResumeFile.value = file;
+    showRedactDialog.value = true;
+  } catch (err) {
+    console.error('Failed to prepare resume document:', err);
+    documentStore.errorMessage = err.message || 'Failed to load resume sample.';
   }
 }
 

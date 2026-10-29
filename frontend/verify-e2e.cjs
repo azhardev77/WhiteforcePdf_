@@ -23,8 +23,8 @@ const fs = require('fs');
   page.on('pageerror', err => console.error('[Browser Error]:', err));
 
   try {
-    console.log('1. Navigating to http://localhost:5173...');
-    await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
+    console.log('1. Navigating to http://localhost:5173/editor...');
+    await page.goto('http://localhost:5173/editor', { waitUntil: 'networkidle' });
 
     console.log('2. Clicking "Open Tender RFQ PDF" button...');
     const sampleBtn = page.locator('button.btn-sample-tender');
@@ -501,18 +501,80 @@ const fs = require('fs');
     console.log('[PASS] Requirement 4: Exported PDF generated and downloaded cleanly.');
 
     // =========================================================================
+    // TASK A1: Backend Export/Redact Failure Blocks Export (No Leaks)
+    // =========================================================================
+    console.log('\n--- VERIFYING TASK A1: Backend Redaction Route Blocked Export Failure ---');
+    await page.route('**/api/export/redact', route => {
+      console.log('[E2E Mock] Intercepted and aborting /api/export/redact');
+      route.abort('failed');
+    });
+
+    let unexpectedDownload = false;
+    const downloadListener = () => { unexpectedDownload = true; };
+    page.on('download', downloadListener);
+
+    console.log('Clicking Export PDF button while backend route is blocked...');
+    await exportBtn.click();
+
+    // Verify error banner is visible and contains the exact required error text
+    const errorBanner = page.locator('.error-banner');
+    await errorBanner.waitFor({ state: 'visible', timeout: 5000 });
+    const bannerText = await errorBanner.innerText();
+    console.log(`Error Banner Text: "${bannerText.trim()}"`);
+
+    const expectedMsg = 'Server unavailable. Export blocked so hidden text is not leaked.';
+    if (!bannerText.includes(expectedMsg)) {
+      throw new Error(`TASK A1 FAILED: Expected error banner to contain "${expectedMsg}", got "${bannerText}"`);
+    }
+
+    // Wait 1.5 seconds to confirm no download occurred
+    await page.waitForTimeout(1500);
+    page.off('download', downloadListener);
+
+    if (unexpectedDownload) {
+      throw new Error('TASK A1 FAILED: Unexpected file download occurred when backend was blocked!');
+    }
+    console.log('[PASS] Task A1: Error banner displayed ("Server unavailable. Export blocked so hidden text is not leaked.") and download was blocked.');
+
+    // Clear error banner for subsequent test steps
+    const dismissBtn = page.locator('.btn-dismiss-error');
+    if (await dismissBtn.isVisible()) {
+      await dismissBtn.click();
+    }
+    await page.unroute('**/api/export/redact');
+
+    // =========================================================================
     // REQUIREMENT 7: Resume Header Cross-Column & Multi-Line Layout Verification
     // (`resume.pdf`: 20pt Left Heading vs 9pt Right Contact & LinkedIn)
     // =========================================================================
     console.log('\n--- VERIFYING REQUIREMENT 7: Resume Header Layout & Strict Column Isolation ---');
 
     console.log('Navigating back to home screen to load resume.pdf...');
-    await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
+    await page.evaluate(async () => {
+      if (window.__sessionStorageService?.clearCurrentSession) {
+        await window.__sessionStorageService.clearCurrentSession();
+      }
+      try {
+        const dbs = await window.indexedDB.databases?.();
+        if (dbs) {
+          for (const db of dbs) {
+            window.indexedDB.deleteDatabase(db.name);
+          }
+        }
+      } catch (e) {}
+    });
+    await page.goto('http://localhost:5173/editor', { waitUntil: 'networkidle' });
 
     console.log('Clicking "Open Resume PDF" button...');
     const resumeBtn = page.locator('button.btn-sample-resume');
     await resumeBtn.waitFor({ state: 'visible', timeout: 5000 });
     await resumeBtn.click();
+
+    const modalConfirmBtn = page.locator('[data-testid="btn-confirm-redact"]');
+    if (await modalConfirmBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      console.log('Confirming redaction categories modal on resume load...');
+      await modalConfirmBtn.click();
+    }
 
     console.log('Waiting for Page 1 canvas and Resume paragraph blocks...');
     await page.waitForSelector('#pdf-page-1 canvas.pdf-page-canvas', { state: 'visible', timeout: 15000 });
@@ -551,36 +613,40 @@ const fs = require('fs');
       console.log(`  [${b.id}] text="${b.text.slice(0, 40)}" | orig="${b.originalText.slice(0, 40)}" | isEdited=${b.isEdited} (fontSize: ${b.fontSize}px)`);
     }
 
-    // 1. Verify 4 Independent Blocks on Resume Page 1
+    // 1. Verify Independent Blocks on Resume Page 1 (server-stripped PDF)
     const nameBlockData = resumeBlocks.find(b => b.text.includes('Mohd Azhar Mansoori') || (b.originalText && b.originalText.includes('Mohd Azhar Mansoori')));
     const contactBlockData = resumeBlocks.find(b => b.text.includes('Jabalpur') || (b.originalText && b.originalText.includes('Jabalpur')));
     const linkedInBlockData = resumeBlocks.find(b => b.text.includes('LinkedIn') || b.text.includes('GitHub'));
-    const emailBlockData = resumeBlocks.find(b => b.text.includes('azharmansoori725@gmail.com') || (b.originalText && b.originalText.includes('azharmansoori725@gmail.com')));
 
     if (!nameBlockData) {
       throw new Error('REQUIREMENT 7 FAILED: Heading block "Mohd Azhar Mansoori" not found!');
     }
     if (!contactBlockData) {
-      throw new Error('REQUIREMENT 7 FAILED: Right contact block "Jabalpur +91-7747047876" not found!');
+      throw new Error('REQUIREMENT 7 FAILED: Right contact block "Jabalpur" not found!');
     }
     if (!linkedInBlockData) {
       throw new Error('REQUIREMENT 7 FAILED: Right contact line "LinkedIn GitHub..." not found!');
     }
-    if (!emailBlockData) {
-      throw new Error('REQUIREMENT 7 FAILED: Right contact email "azharmansoori725@gmail.com" not found!');
+
+    // Verify server has already stripped email and phone from all blocks
+    const anyEmailBlock = resumeBlocks.find(b => b.text.includes('azharmansoori725@gmail.com') || (b.originalText && b.originalText.includes('azharmansoori725@gmail.com')));
+    if (anyEmailBlock) {
+      throw new Error('REQUIREMENT 7 FAILED: Server-stripped PDF still contains email in blocks!');
+    }
+    if (contactBlockData.text.includes('+91-7747047876') || (contactBlockData.originalText && contactBlockData.originalText.includes('+91-7747047876'))) {
+      throw new Error('REQUIREMENT 7 FAILED: Server-stripped PDF still contains phone in contact block!');
     }
 
-    console.log('\nChecking 4 Independent Blocks in Resume Header:');
+    console.log('\nChecking Independent Blocks in Resume Header:');
     console.log(`  1. Name Block [${nameBlockData.id}]: "${nameBlockData.text}", fontSize=${nameBlockData.fontSize}px`);
     console.log(`  2. Contact Block [${contactBlockData.id}]: "${contactBlockData.text}", fontSize=${contactBlockData.fontSize}px`);
     console.log(`  3. LinkedIn Block [${linkedInBlockData.id}]: "${linkedInBlockData.text}", fontSize=${linkedInBlockData.fontSize}px`);
-    console.log(`  4. Email Block [${emailBlockData.id}]: "${emailBlockData.text}", fontSize=${emailBlockData.fontSize}px`);
 
-    const blockIds = new Set([nameBlockData.id, contactBlockData.id, linkedInBlockData.id, emailBlockData.id]);
-    if (blockIds.size !== 4) {
-      throw new Error(`REQUIREMENT 7 FAILED: Expected 4 distinct blocks, but got ${blockIds.size}! Some contact lines were merged together.`);
+    const blockIds = new Set([nameBlockData.id, contactBlockData.id, linkedInBlockData.id]);
+    if (blockIds.size !== 3) {
+      throw new Error(`REQUIREMENT 7 FAILED: Expected 3 distinct blocks, but got ${blockIds.size}! Some contact lines were merged together.`);
     }
-    console.log('[PASS] Requirement 7a: "Mohd Azhar Mansoori", "Jabalpur...", "LinkedIn...", and "azharmansoori725@gmail.com" are 4 separate independent blocks.');
+    console.log('[PASS] Requirement 7a: "Mohd Azhar Mansoori", "Jabalpur...", and "LinkedIn..." are separate independent blocks.');
 
     // 2. Test Horizontal Auto-Expansion Before Wrapping ("Mohd Azhar Mansoooori")
     console.log('\nTesting Horizontal Auto-Expansion Before Wrapping on "Mohd Azhar Mansoori"...');
@@ -722,98 +788,75 @@ const fs = require('fs');
     console.log('\n--- VERIFYING REQUIREMENT 8: Automatic Email & Phone Number Redaction on Upload ---');
 
     console.log('Reloading resume.pdf fresh to inspect initial automatic redaction state on load...');
-    await page.goto('http://localhost:5173', { waitUntil: 'networkidle' });
+    await page.evaluate(async () => {
+      if (window.__sessionStorageService?.clearCurrentSession) {
+        await window.__sessionStorageService.clearCurrentSession();
+      }
+      try {
+        const dbs = await window.indexedDB.databases?.();
+        if (dbs) {
+          for (const db of dbs) {
+            window.indexedDB.deleteDatabase(db.name);
+          }
+        }
+      } catch (e) {}
+    });
+    await page.goto('http://localhost:5173/editor', { waitUntil: 'networkidle' });
     const freshResumeBtn = page.locator('button.btn-sample-resume');
     await freshResumeBtn.waitFor({ state: 'visible', timeout: 5000 });
     await freshResumeBtn.click();
+
+    const freshConfirmBtn = page.locator('[data-testid="btn-confirm-redact"]');
+    if (await freshConfirmBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      console.log('Confirming redaction categories modal on fresh resume load...');
+      await freshConfirmBtn.click();
+    }
 
     await page.waitForSelector('#pdf-page-1 canvas.pdf-page-canvas', { state: 'visible', timeout: 15000 });
     await page.waitForSelector('#pdf-page-1 .wps-paragraph-block', { state: 'visible', timeout: 15000 });
     await page.waitForTimeout(1000);
 
-    // 1. Verify top toolbar counters reflect automatic redactions immediately upon load
+    // 1. Verify session mode badge shows RESUME
+    const sessionBadge = page.locator('[data-testid="session-mode-badge"]');
+    await sessionBadge.waitFor({ state: 'visible', timeout: 5000 });
+    const badgeText = await sessionBadge.innerText();
+    console.log(`Session Mode Badge: "${badgeText}"`);
+    if (!badgeText.includes('RESUME')) {
+      throw new Error(`REQUIREMENT 8 FAILED: Expected session mode RESUME, got "${badgeText}"`);
+    }
+
+    // 2. Verify server-side redaction is the single source of truth (0 client auto-edits)
     const toolbarEditsCount = await page.evaluate(() => {
       const store = window.__documentStore;
       return store ? store.editsCount : -1;
     });
     console.log(`Initial Document Store Edits Count on Resume Load: ${toolbarEditsCount}`);
-    if (toolbarEditsCount < 2) {
-      throw new Error(`REQUIREMENT 8 FAILED: Expected at least 2 automatic redaction edits on load, but got ${toolbarEditsCount}!`);
+    if (toolbarEditsCount !== 0) {
+      throw new Error(`REQUIREMENT 8 FAILED: Expected 0 client edits on load (server is single source of truth), but got ${toolbarEditsCount}!`);
     }
 
-    const toolbarStatusText = await page.locator('.editor-toolbar .edits-status').innerText();
-    console.log(`Toolbar Redaction Status Text: "${toolbarStatusText}"`);
-    if (!toolbarStatusText.includes('redaction edit')) {
-      throw new Error(`REQUIREMENT 8 FAILED: Toolbar edits status does not indicate active redactions! Got: "${toolbarStatusText}"`);
-    }
-    console.log('[PASS] Requirement 8a: Top toolbar counters immediately reflect automatic redactions upon upload.');
-
-    // 2. Verify contact block has phone stripped and email block has empty string
-    const autoRedactedState = await page.evaluate(({ cId, eId }) => {
-      const cEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${cId}"]`);
-      const eEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${eId}"]`);
-      return {
-        contactText: cEl ? cEl.getAttribute('data-text') : null,
-        contactIsEdited: cEl ? cEl.classList.contains('is-edited') : false,
-        emailText: eEl ? eEl.getAttribute('data-text') : null,
-        emailIsEdited: eEl ? eEl.classList.contains('is-edited') : false
-      };
-    }, { cId: contactBlockData.id, eId: emailBlockData.id });
-
-    console.log('Auto-Redacted Blocks State on Load:', autoRedactedState);
-    if (autoRedactedState.contactText !== 'Jabalpur') {
-      throw new Error(`REQUIREMENT 8 FAILED: Phone was not cleanly stripped from contact block! Got: "${autoRedactedState.contactText}", expected: "Jabalpur"`);
-    }
-    if (!autoRedactedState.contactIsEdited) {
-      throw new Error('REQUIREMENT 8 FAILED: Contact block is not marked with .is-edited!');
-    }
-    if (autoRedactedState.emailText !== '') {
-      throw new Error(`REQUIREMENT 8 FAILED: Email block was not replaced with empty string! Got: "${autoRedactedState.emailText}"`);
-    }
-    if (!autoRedactedState.emailIsEdited) {
-      throw new Error('REQUIREMENT 8 FAILED: Email block is not marked with .is-edited!');
-    }
-    console.log('[PASS] Requirement 8b: Contact phone stripped to "Jabalpur" and email redacted to "" (empty string).');
-
-    // 3. Verify whiteout mask boxes rendered immediately over both bounding boxes
-    const contactMask = page.locator(`#pdf-page-1 .whiteout-mask-box[id="mask-${contactBlockData.id}"]`);
-    const emailMask = page.locator(`#pdf-page-1 .whiteout-mask-box[id="mask-${emailBlockData.id}"]`);
-    if (await contactMask.count() === 0) {
-      throw new Error(`REQUIREMENT 8 FAILED: Whiteout mask box missing for contact block ${contactBlockData.id}!`);
-    }
-    if (await emailMask.count() === 0) {
-      throw new Error(`REQUIREMENT 8 FAILED: Whiteout mask box missing for email block ${emailBlockData.id}!`);
-    }
-    console.log('[PASS] Requirement 8c: Dedicated whiteout masks immediately mounted over email and phone bounding boxes.');
-
-    // Capture screenshot of verified automatic redaction immediately on upload
-    const autoRedactScreenshotPath = path.resolve(rootDir, 'auto_redaction_verified.png');
-    await page.screenshot({ path: autoRedactScreenshotPath, fullPage: false });
-    console.log(`Screenshot of verified auto-redaction on upload saved to ${autoRedactScreenshotPath}`);
-
-    // 4. Verify Export PDF Payload contains automatic redactions
-    const autoPayload = await page.evaluate(() => {
-      if (typeof window.__buildRedactionPayload === 'function') {
-        return window.__buildRedactionPayload();
-      }
-      return [];
+    // 3. Verify served PDF has email and phone stripped
+    const loadedBlocks = await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('#pdf-page-1 .wps-paragraph-block'));
+      return els.map(el => ({
+        id: el.getAttribute('data-block-id') || '',
+        text: (el.getAttribute('data-text') || el.innerText || '').trim(),
+        originalText: (el.getAttribute('data-original-text') || '').trim()
+      }));
     });
-    console.log(`Export payload contains ${autoPayload.length} redaction edits:`);
-    for (const e of autoPayload) {
-      console.log(`  - [${e.lineId}]: original="${e.originalText}" -> new="${e.newText}"`);
-    }
-    const emailPayloadEntry = autoPayload.find(e => e.originalText && e.originalText.includes('azharmansoori725@gmail.com'));
-    const phonePayloadEntry = autoPayload.find(e => e.originalText && e.originalText.includes('+91-7747047876'));
-    if (!emailPayloadEntry || emailPayloadEntry.newText !== '') {
-      throw new Error('REQUIREMENT 8 FAILED: Email redaction entry missing or non-empty in export payload!');
-    }
-    if (!phonePayloadEntry || phonePayloadEntry.newText !== 'Jabalpur') {
-      throw new Error(`REQUIREMENT 8 FAILED: Phone redaction entry in export payload has unexpected text: "${phonePayloadEntry?.newText}"!`);
-    }
-    console.log('[PASS] Requirement 8d: Export payload properly contains all automatic PII redaction entries.');
 
-    // 5. Verify Revert All functionality
-    console.log('\nTesting "Revert All" button restores original PDF state...');
+    const emailFound = loadedBlocks.some(b => b.text.includes('azharmansoori725@gmail.com') || b.originalText.includes('azharmansoori725@gmail.com'));
+    const phoneFound = loadedBlocks.some(b => b.text.includes('+91-7747047876') || b.originalText.includes('+91-7747047876'));
+    if (emailFound) {
+      throw new Error('REQUIREMENT 8 FAILED: Server-stripped PDF still contains email!');
+    }
+    if (phoneFound) {
+      throw new Error('REQUIREMENT 8 FAILED: Server-stripped PDF still contains phone!');
+    }
+    console.log('[PASS] Requirement 8: Server-side redaction stripped email and phone; client has 0 auto-edits on load.');
+
+    // 4. Verify Revert All does NOT restore any category that was toggled on
+    console.log('\nTesting "Revert All" button does NOT restore toggled PII categories...');
     await page.evaluate(() => {
       if (typeof window.__revertAll === 'function') {
         window.__revertAll();
@@ -821,37 +864,23 @@ const fs = require('fs');
     });
     await page.waitForTimeout(500);
 
-    const afterRevertEditsCount = await page.evaluate(() => {
-      const store = window.__documentStore;
-      return store ? store.editsCount : -1;
+    const afterRevertBlocks = await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('#pdf-page-1 .wps-paragraph-block'));
+      return els.map(el => ({
+        text: (el.getAttribute('data-text') || el.innerText || '').trim(),
+        originalText: (el.getAttribute('data-original-text') || '').trim()
+      }));
     });
-    console.log(`Edits Count after Revert All: ${afterRevertEditsCount}`);
-    if (afterRevertEditsCount !== 0) {
-      throw new Error(`REQUIREMENT 8 FAILED: Expected 0 edits after Revert All, got ${afterRevertEditsCount}!`);
-    }
 
-    const revertedBlockState = await page.evaluate(({ cId, eId }) => {
-      const cEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${cId}"]`);
-      const eEl = document.querySelector(`#pdf-page-1 .wps-paragraph-block[data-block-id="${eId}"]`);
-      return {
-        contactText: cEl ? cEl.getAttribute('data-text') : null,
-        contactIsEdited: cEl ? cEl.classList.contains('is-edited') : true,
-        emailText: eEl ? eEl.getAttribute('data-text') : null,
-        emailIsEdited: eEl ? eEl.classList.contains('is-edited') : true
-      };
-    }, { cId: contactBlockData.id, eId: emailBlockData.id });
-
-    console.log('Block state after Revert All:', revertedBlockState);
-    if (!revertedBlockState.contactText.includes('+91-7747047876')) {
-      throw new Error(`REQUIREMENT 8 FAILED: Contact block did not restore original phone! Got: "${revertedBlockState.contactText}"`);
+    const emailAfterRevert = afterRevertBlocks.some(b => b.text.includes('azharmansoori725@gmail.com') || b.originalText.includes('azharmansoori725@gmail.com'));
+    const phoneAfterRevert = afterRevertBlocks.some(b => b.text.includes('+91-7747047876') || b.originalText.includes('+91-7747047876'));
+    if (emailAfterRevert) {
+      throw new Error('REQUIREMENT 8 FAILED: "Revert All" restored stripped email!');
     }
-    if (!revertedBlockState.emailText.includes('azharmansoori725@gmail.com')) {
-      throw new Error(`REQUIREMENT 8 FAILED: Email block did not restore original email! Got: "${revertedBlockState.emailText}"`);
+    if (phoneAfterRevert) {
+      throw new Error('REQUIREMENT 8 FAILED: "Revert All" restored stripped phone!');
     }
-    if (revertedBlockState.contactIsEdited || revertedBlockState.emailIsEdited) {
-      throw new Error('REQUIREMENT 8 FAILED: Blocks still marked as edited after Revert All!');
-    }
-    console.log('[PASS] Requirement 8e: Revert All cleanly restores original email, phone, and unedited state.');
+    console.log('[PASS] Requirement 8: "Revert All" does not reveal any stripped PII category.');
 
     // Capture screenshot of verified reverted state
     const autoRedactRevertedScreenshotPath = path.resolve(rootDir, 'auto_redaction_reverted_verified.png');
