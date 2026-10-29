@@ -175,4 +175,44 @@ class ExportRedactionControllerTest {
         String responseBodyStr = responseContent != null ? new String(responseContent, StandardCharsets.UTF_8) : "";
         assertThat(responseBodyStr).doesNotContain(originalSecretText);
     }
+
+    @Test
+    @DisplayName("POST /api/export/redact returns X-Export-Warnings header when unrenderable characters are replaced")
+    void testRedactAndReplaceWithUnrenderableCharacterReturnsWarningHeader() throws Exception {
+        double[] bbox = new double[]{50.0, 85.0, 300.0, 25.0};
+        Style style = Style.of("Helvetica", 14.0, false, false, "#000000");
+
+        // Character \uE000 (Private Use Area) is not present in Liberation or Noto Sans
+        String textWithUnrenderable = "Item: \uE000 Secret";
+        TextRedactionEdit edit = new TextRedactionEdit(1, bbox, originalSecretText, textWithUnrenderable, style, "#FFFFFF");
+        String editsJson = objectMapper.writeValueAsString(List.of(edit));
+
+        ByteArrayResource fileResource = new ByteArrayResource(samplePdfBytes) {
+            @Override
+            public String getFilename() {
+                return "tender_secret.pdf";
+            }
+        };
+
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("file", fileResource);
+        body.add("edits", editsJson);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        headers.set("X-API-KEY", "test_secret_api_key_xyz");
+
+        HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
+
+        ResponseEntity<byte[]> response = restTemplate.exchange(
+                "/api/export/redact",
+                HttpMethod.POST,
+                requestEntity,
+                byte[].class
+        );
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        String warningHeader = response.getHeaders().getFirst("X-Export-Warnings");
+        assertThat(warningHeader).isNotNull().isEqualTo("1");
+    }
 }

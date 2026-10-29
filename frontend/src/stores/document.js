@@ -711,6 +711,7 @@ export const useDocumentStore = defineStore('document', {
         const fileBlob = this.originalFile || new Blob([buffer.slice(0)], { type: 'application/pdf' });
 
         let modifiedBytes = null;
+        let warningsCount = 0;
 
         // 1. Primary: Route through backend PDFBox true token-stripping endpoint
         const hasEdits = Array.isArray(editsToApply) && editsToApply.length > 0;
@@ -720,6 +721,7 @@ export const useDocumentStore = defineStore('document', {
             if (redactedBlob && redactedBlob.size > 0) {
               const arrayBuf = await redactedBlob.arrayBuffer();
               modifiedBytes = new Uint8Array(arrayBuf);
+              warningsCount = redactedBlob.warningsCount || 0;
             } else {
               throw new Error('Server returned empty response.');
             }
@@ -825,7 +827,8 @@ export const useDocumentStore = defineStore('document', {
           success: true,
           fileName: this.fileName,
           overwrittenDisk,
-          pdfBytes: newBuffer
+          pdfBytes: newBuffer,
+          warningsCount
         };
       } catch (err) {
         this.errorMessage = err.message || 'Failed to save PDF document.';

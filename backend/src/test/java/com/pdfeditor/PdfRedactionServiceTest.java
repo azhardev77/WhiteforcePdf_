@@ -384,5 +384,39 @@ class PdfRedactionServiceTest {
             assertThat(extracted).contains("Jabalpur");
         }
     }
+
+    @Test
+    @DisplayName("Unicode-capable fonts: Total: ₹ 5,000 – “quote” • item preserves Rupee and punctuation intact with no Rs.")
+    void testUnicodeFontAndRupeePreservation() throws IOException {
+        byte[] originalPdf = createTestPdf("Total: $ 5,000 - quote - item");
+        double[] bbox = new double[]{50.0, 85.0, 300.0, 25.0};
+        Style style = Style.of("Helvetica", 14.0, false, false, "#000000");
+
+        String unicodeText = "Total: \u20B9 5,000 \u2013 \u201Cquote\u201D \u2022 item";
+        TextRedactionEdit edit = new TextRedactionEdit(
+                1,
+                bbox,
+                "Total: $ 5,000 - quote - item",
+                unicodeText,
+                style,
+                "#FFFFFF"
+        );
+
+        byte[] modifiedPdf = pdfRedactionService.redactAndReplace(originalPdf, List.of(edit));
+        assertThat(modifiedPdf).isNotNull().isNotEmpty();
+
+        try (PDDocument doc = Loader.loadPDF(modifiedPdf)) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extracted = stripper.getText(doc);
+
+            assertThat(extracted).contains("\u20B9");
+            assertThat(extracted).doesNotContain("Rs.");
+            assertThat(extracted).contains("\u2013");
+            assertThat(extracted).contains("\u201C");
+            assertThat(extracted).contains("\u201D");
+            assertThat(extracted).contains("\u2022");
+            assertThat(extracted).contains("5,000");
+        }
+    }
 }
 

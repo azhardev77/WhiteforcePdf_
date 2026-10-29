@@ -88,6 +88,7 @@ public class ExportController {
 
         byte[] originalBytes = file.getBytes();
         byte[] modifiedBytes = pdfRedactionService.redactAndReplace(originalBytes, edits);
+        int warnings = pdfRedactionService.getLastReplacedCharCount();
 
         String filename = file.getOriginalFilename();
         if (filename == null || filename.isBlank()) {
@@ -98,6 +99,10 @@ public class ExportController {
         headers.setContentType(MediaType.APPLICATION_PDF);
         headers.setContentDispositionFormData("attachment", filename);
         headers.setContentLength(modifiedBytes.length);
+        if (warnings > 0) {
+            headers.set("X-Export-Warnings", String.valueOf(warnings));
+            headers.add("Access-Control-Expose-Headers", "X-Export-Warnings");
+        }
 
         return ResponseEntity.ok()
             .headers(headers)
@@ -112,6 +117,7 @@ public class ExportController {
 
         byte[] originalBytes = Base64.getDecoder().decode(request.getPdfBase64());
         byte[] modifiedBytes = pdfRedactionService.redactAndReplace(originalBytes, request.getEdits());
+        int warnings = pdfRedactionService.getLastReplacedCharCount();
 
         String filename = request.getFilename();
         if (filename == null || filename.isBlank()) {
@@ -124,6 +130,10 @@ public class ExportController {
         headers.setContentType(MediaType.APPLICATION_PDF);
         headers.setContentDispositionFormData("attachment", filename);
         headers.setContentLength(modifiedBytes.length);
+        if (warnings > 0) {
+            headers.set("X-Export-Warnings", String.valueOf(warnings));
+            headers.add("Access-Control-Expose-Headers", "X-Export-Warnings");
+        }
 
         return ResponseEntity.ok()
             .headers(headers)

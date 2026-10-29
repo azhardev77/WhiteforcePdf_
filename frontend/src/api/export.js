@@ -54,6 +54,11 @@ export async function requestRedactedPdf(fileOrBlob, edits, downloadFilename) {
     }
   });
 
+  const warnings = response.headers?.['x-export-warnings'];
+  if (warnings && response.data) {
+    response.data.warningsCount = parseInt(warnings, 10) || 0;
+  }
+
   return response.data;
 }
 

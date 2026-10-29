@@ -551,9 +551,9 @@ async function handleSave() {
     }, 2500);
 
     const targetName = result.fileName || documentStore.fileName || 'PDF';
-    const feedbackMsg = result.overwrittenDisk
-      ? `Saved directly to ${targetName} ✓`
-      : `Saved in workspace: ${targetName} ✓`;
+    const feedbackMsg = result?.warningsCount > 0
+      ? `Saved with ${result.warningsCount} unsupported character(s) replaced.`
+      : (result.overwrittenDisk ? `Saved directly to ${targetName} ✓` : `Saved in workspace: ${targetName} ✓`);
     showExportToast(feedbackMsg);
   } catch (err) {
     console.error('Save failed:', err);
@@ -573,8 +573,12 @@ async function handleExport() {
       documentStore.setEdits(edits);
     }
     const userRotations = canvasEditorRef.value?.getUserRotations ? canvasEditorRef.value.getUserRotations() : {};
-    await documentStore.downloadPdf({ userRotations });
-    showExportToast('PDF modified and downloaded successfully!');
+    const exportedBlob = await documentStore.downloadPdf({ userRotations });
+    if (exportedBlob?.warningsCount > 0) {
+      showExportToast(`Exported with ${exportedBlob.warningsCount} unsupported character(s) replaced.`);
+    } else {
+      showExportToast('PDF modified and downloaded successfully!');
+    }
   } catch (err) {
     console.error('Export failed:', err);
     if (!documentStore.errorMessage) {

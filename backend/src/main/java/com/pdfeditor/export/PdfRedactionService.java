@@ -7,6 +7,7 @@ import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDType0Font;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.graphics.image.LosslessFactory;
@@ -24,8 +25,10 @@ import org.springframework.stereotype.Service;
 
 import java.awt.Color;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -34,12 +37,20 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class PdfRedactionService {
 
     private static final float RIGHT_PAGE_MARGIN = 36.0f; // Right margin (0.5 inch)
     private static final float LINE_HEIGHT_FACTOR = 1.20f;
+
+    private final Map<String, byte[]> fontBytesMap = new ConcurrentHashMap<>();
+    private final ThreadLocal<Integer> lastReplacedCharCount = ThreadLocal.withInitial(() -> 0);
+
+    public int getLastReplacedCharCount() {
+        return lastReplacedCharCount.get();
+    }
 
     public byte[] redactAndReplace(byte[] originalPdfBytes, List<TextRedactionEdit> edits) throws IOException {
         if (originalPdfBytes == null || originalPdfBytes.length == 0) {
@@ -51,6 +62,9 @@ public class PdfRedactionService {
         }
 
         try (PDDocument doc = Loader.loadPDF(originalPdfBytes)) {
+            Map<String, PDType0Font> docFontCache = new HashMap<>();
+            int totalReplacedCount = 0;
+
             Map<Integer, List<TextRedactionEdit>> editsByPage = new HashMap<>();
             for (TextRedactionEdit edit : edits) {
                 if (edit == null || edit.getBbox() == null || edit.getBbox().length < 4) {
@@ -112,7 +126,8 @@ public class PdfRedactionService {
                     float fontSize = (style != null && style.fontSize() > 0) ? (float) style.fontSize() : 11.0f;
                     Color textColor = parseColor(style != null ? style.color() : "#000000", Color.BLACK);
                     String fontFamily = style != null ? style.fontFamily() : null;
-                    PDFont font = selectFont(fontFamily, bold, italic);
+                    PDType0Font font = selectFont(doc, docFontCache, fontFamily, bold, italic);
+                    PDType0Font fallbackFont = getFallbackFont(doc, docFontCache);
                     float lineHeight = fontSize * LINE_HEIGHT_FACTOR;
 
                     // Wrapping ke liye maximum width:
@@ -121,10 +136,13 @@ public class PdfRedactionService {
                     float maxAllowedWidth = Math.max(boxW, pageW - boxX - RIGHT_PAGE_MARGIN);
 
                     String newText = edit.getNewText();
-                    List<String> wrappedLines = wrapTextToWidth(newText, font, fontSize, maxAllowedWidth);
+                    ProcessedText processedNew = prepareText(newText, font, fallbackFont);
+                    totalReplacedCount += processedNew.replacedCount;
+                    List<String> wrappedLines = wrapTextToWidth(processedNew.text, font, fallbackFont, fontSize, maxAllowedWidth);
 
-                    List<String> origLines = (edit.getOriginalText() != null && !edit.getOriginalText().isEmpty())
-                            ? wrapTextToWidth(edit.getOriginalText(), font, fontSize, maxAllowedWidth)
+                    ProcessedText processedOrig = prepareText(edit.getOriginalText(), font, fallbackFont);
+                    List<String> origLines = (processedOrig.text != null && !processedOrig.text.isEmpty())
+                            ? wrapTextToWidth(processedOrig.text, font, fallbackFont, fontSize, maxAllowedWidth)
                             : List.of();
                     float effectiveLineHeight = (origLines.size() > 1 && boxH > 0)
                             ? Math.max(lineHeight, boxH / origLines.size())
@@ -224,10 +242,9 @@ public class PdfRedactionService {
                                 float baselineY = originY + (pageH - boxY - (fontSize * 0.82f)) - (i * effectiveLineHeight);
 
                                 cs.beginText();
-                                cs.setFont(font, fontSize);
                                 cs.setNonStrokingColor(textColor);
                                 cs.newLineAtOffset(textX, baselineY);
-                                cs.showText(lineText);
+                                renderTextWithFallback(cs, lineText, font, fallbackFont, fontSize);
                                 cs.endText();
                             }
                         }
@@ -235,36 +252,175 @@ public class PdfRedactionService {
                 }
             }
 
+            lastReplacedCharCount.set(totalReplacedCount);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             doc.save(baos);
             return baos.toByteArray();
         }
     }
 
-    private float safeGetStringWidth(PDFont font, String text, float fontSize) {
+    private byte[] getFontBytes(String filename) throws IOException {
+        byte[] cached = fontBytesMap.get(filename);
+        if (cached != null) {
+            return cached;
+        }
+        try (InputStream is = getClass().getResourceAsStream("/fonts/" + filename)) {
+            if (is == null) {
+                throw new IOException("Font resource not found: /fonts/" + filename);
+            }
+            byte[] bytes = is.readAllBytes();
+            fontBytesMap.put(filename, bytes);
+            return bytes;
+        }
+    }
+
+    private PDType0Font getOrLoadFont(PDDocument doc, Map<String, PDType0Font> fontCache, String filename) throws IOException {
+        PDType0Font cached = fontCache.get(filename);
+        if (cached != null) {
+            return cached;
+        }
+        byte[] bytes = getFontBytes(filename);
+        PDType0Font font = PDType0Font.load(doc, new ByteArrayInputStream(bytes));
+        fontCache.put(filename, font);
+        return font;
+    }
+
+    private String resolveFontFilename(String fontFamily, boolean bold, boolean italic) {
+        String fn = fontFamily != null ? fontFamily.toLowerCase() : "";
+        String style = (bold && italic) ? "-BoldItalic.ttf" : bold ? "-Bold.ttf" : italic ? "-Italic.ttf" : "-Regular.ttf";
+        if (fn.contains("times") || fn.contains("serif") || fn.contains("roman")) {
+            return "LiberationSerif" + style;
+        } else if (fn.contains("courier") || fn.contains("mono")) {
+            return "LiberationMono" + style;
+        } else {
+            return "LiberationSans" + style;
+        }
+    }
+
+    private PDType0Font selectFont(PDDocument doc, Map<String, PDType0Font> fontCache,
+                                   String fontFamily, boolean bold, boolean italic) throws IOException {
+        String filename = resolveFontFilename(fontFamily, bold, italic);
+        return getOrLoadFont(doc, fontCache, filename);
+    }
+
+    private PDType0Font getFallbackFont(PDDocument doc, Map<String, PDType0Font> fontCache) throws IOException {
+        return getOrLoadFont(doc, fontCache, "NotoSans-Regular.ttf");
+    }
+
+    private static boolean fontHasGlyph(PDType0Font font, int codePoint) {
+        if (font == null) return false;
+        if (font.getCmapLookup() != null) {
+            return font.getCmapLookup().getGlyphId(codePoint) > 0;
+        }
+        try {
+            font.encode(new String(Character.toChars(codePoint)));
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static class ProcessedText {
+        final String text;
+        final int replacedCount;
+
+        ProcessedText(String text, int replacedCount) {
+            this.text = text;
+            this.replacedCount = replacedCount;
+        }
+    }
+
+    private ProcessedText prepareText(String text, PDType0Font primaryFont, PDType0Font fallbackFont) {
+        if (text == null) {
+            return new ProcessedText("", 0);
+        }
+        StringBuilder sb = new StringBuilder();
+        int replaced = 0;
+        int i = 0;
+        int len = text.length();
+        while (i < len) {
+            int cp = text.codePointAt(i);
+            int charCount = Character.charCount(cp);
+            i += charCount;
+
+            if (cp == '\n' || cp == '\r') {
+                sb.appendCodePoint(cp);
+                continue;
+            }
+            if (cp == '\t') {
+                sb.append("    ");
+                continue;
+            }
+
+            // 1. Check if primary or fallback font can render glyph
+            if (fontHasGlyph(primaryFont, cp) || fontHasGlyph(fallbackFont, cp)) {
+                sb.appendCodePoint(cp);
+                continue;
+            }
+
+            // 2. Neither font has the glyph: apply typographic fallback if applicable
+            switch (cp) {
+                case '\u201C', '\u201D' -> sb.append('"');
+                case '\u2018', '\u2019' -> sb.append('\'');
+                case '\u2013', '\u2014' -> sb.append('-');
+                case '\u2022' -> sb.append('-');
+                case '\u2026' -> sb.append("...");
+                default -> {
+                    if (cp < 32) {
+                        sb.append(' ');
+                    } else {
+                        // Character no font can render: replace with '?' and count it
+                        sb.append('?');
+                        replaced++;
+                    }
+                }
+            }
+        }
+        return new ProcessedText(sb.toString(), replaced);
+    }
+
+    private float safeGetStringWidth(PDType0Font font, PDType0Font fallbackFont, String text, float fontSize) {
         if (text == null || text.isEmpty()) {
             return 0.0f;
         }
-        try {
-            return (font.getStringWidth(text) / 1000.0f) * fontSize;
-        } catch (Exception e) {
-            return text.length() * fontSize * 0.5f;
+        float totalWidth = 0.0f;
+        int i = 0;
+        int len = text.length();
+        while (i < len) {
+            int cp = text.codePointAt(i);
+            int charCount = Character.charCount(cp);
+            PDType0Font fontToUse = fontHasGlyph(font, cp) ? font : fallbackFont;
+
+            int runStart = i;
+            i += charCount;
+            while (i < len) {
+                int nextCp = text.codePointAt(i);
+                PDType0Font nextFont = fontHasGlyph(font, nextCp) ? font : fallbackFont;
+                if (nextFont != fontToUse) break;
+                i += Character.charCount(nextCp);
+            }
+            String run = text.substring(runStart, i);
+            try {
+                totalWidth += (fontToUse.getStringWidth(run) / 1000.0f) * fontSize;
+            } catch (Exception e) {
+                totalWidth += run.length() * fontSize * 0.5f;
+            }
         }
+        return totalWidth;
     }
 
     /**
      * Text ko available width (maxWidth) ke hisaab se automatically words aur lines
      * mein wrap karta hai.
      */
-    private List<String> wrapTextToWidth(String text, PDFont font, float fontSize, float maxWidth) throws IOException {
+    private List<String> wrapTextToWidth(String text, PDType0Font font, PDType0Font fallbackFont, float fontSize, float maxWidth) throws IOException {
         List<String> resultLines = new ArrayList<>();
         if (text == null || text.isEmpty()) {
             return resultLines;
         }
 
         float effectiveMaxWidth = Math.max(maxWidth, fontSize * 2.0f);
-        String sanitized = sanitizeForWinAnsi(text);
-        String[] manualParagraphs = sanitized.split("\r?\n");
+        String[] manualParagraphs = text.split("\r?\n");
 
         for (String paragraph : manualParagraphs) {
             if (paragraph.isBlank()) {
@@ -280,7 +436,7 @@ public class PdfRedactionService {
                     continue;
                 }
                 String candidate = currentLine.isEmpty() ? word : currentLine + " " + word;
-                float candidateWidth = safeGetStringWidth(font, candidate, fontSize);
+                float candidateWidth = safeGetStringWidth(font, fallbackFont, candidate, fontSize);
 
                 if (candidateWidth <= effectiveMaxWidth) {
                     currentLine.setLength(0);
@@ -292,18 +448,21 @@ public class PdfRedactionService {
                     }
 
                     // Agar koi single word hi maxWidth se bada ho, toh use characters mein break karein
-                    float wordWidth = safeGetStringWidth(font, word, fontSize);
+                    float wordWidth = safeGetStringWidth(font, fallbackFont, word, fontSize);
                     if (wordWidth > effectiveMaxWidth) {
                         StringBuilder charChunk = new StringBuilder();
-                        for (int i = 0; i < word.length(); i++) {
-                            char c = word.charAt(i);
-                            String nextChunk = charChunk.toString() + c;
-                            float chunkW = safeGetStringWidth(font, nextChunk, fontSize);
+                        int i = 0;
+                        while (i < word.length()) {
+                            int cp = word.codePointAt(i);
+                            int charCount = Character.charCount(cp);
+                            i += charCount;
+                            String nextChunk = charChunk.toString() + new String(Character.toChars(cp));
+                            float chunkW = safeGetStringWidth(font, fallbackFont, nextChunk, fontSize);
                             if (chunkW > effectiveMaxWidth && !charChunk.isEmpty()) {
                                 resultLines.add(charChunk.toString());
                                 charChunk.setLength(0);
                             }
-                            charChunk.append(c);
+                            charChunk.appendCodePoint(cp);
                         }
                         currentLine.append(charChunk);
                     } else {
@@ -318,6 +477,33 @@ public class PdfRedactionService {
         }
 
         return resultLines;
+    }
+
+    private void renderTextWithFallback(PDPageContentStream cs, String text,
+                                        PDType0Font primaryFont, PDType0Font fallbackFont,
+                                        float fontSize) throws IOException {
+        if (text == null || text.isEmpty()) return;
+
+        int i = 0;
+        int len = text.length();
+        while (i < len) {
+            int cp = text.codePointAt(i);
+            int charCount = Character.charCount(cp);
+            PDType0Font fontToUse = fontHasGlyph(primaryFont, cp) ? primaryFont : fallbackFont;
+
+            int runStart = i;
+            i += charCount;
+            while (i < len) {
+                int nextCp = text.codePointAt(i);
+                PDType0Font nextFont = fontHasGlyph(primaryFont, nextCp) ? primaryFont : fallbackFont;
+                if (nextFont != fontToUse) break;
+                i += Character.charCount(nextCp);
+            }
+
+            String run = text.substring(runStart, i);
+            cs.setFont(fontToUse, fontSize);
+            cs.showText(run);
+        }
     }
 
     /**
@@ -394,26 +580,6 @@ public class PdfRedactionService {
             }
             default:
                 return bbox;
-        }
-    }
-
-    private PDFont selectFont(String fontFamily, boolean bold, boolean italic) {
-        String fn = fontFamily != null ? fontFamily.toLowerCase() : "";
-        if (fn.contains("times") || fn.contains("serif") || fn.contains("roman")) {
-            if (bold && italic) return new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD_ITALIC);
-            if (bold) return new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD);
-            if (italic) return new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
-            return new PDType1Font(Standard14Fonts.FontName.TIMES_ROMAN);
-        } else if (fn.contains("courier") || fn.contains("mono")) {
-            if (bold && italic) return new PDType1Font(Standard14Fonts.FontName.COURIER_BOLD_OBLIQUE);
-            if (bold) return new PDType1Font(Standard14Fonts.FontName.COURIER_BOLD);
-            if (italic) return new PDType1Font(Standard14Fonts.FontName.COURIER_OBLIQUE);
-            return new PDType1Font(Standard14Fonts.FontName.COURIER);
-        } else {
-            if (bold && italic) return new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD_OBLIQUE);
-            if (bold) return new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD);
-            if (italic) return new PDType1Font(Standard14Fonts.FontName.HELVETICA_OBLIQUE);
-            return new PDType1Font(Standard14Fonts.FontName.HELVETICA);
         }
     }
 
