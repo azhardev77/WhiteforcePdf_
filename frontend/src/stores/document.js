@@ -579,17 +579,23 @@ export const useDocumentStore = defineStore('document', {
         const fileBlob = this.originalFile || new Blob([buffer.slice(0)], { type: 'application/pdf' });
 
         // 1. Primary: Route through backend PDFBox true token-stripping endpoint
-        try {
-          const redactedBlob = await requestRedactedPdf(fileBlob, this.edits, exportName);
-          if (redactedBlob && redactedBlob.size > 0) {
-            triggerBrowserDownload(redactedBlob, exportName);
-            return redactedBlob;
+        const hasEdits = Array.isArray(this.edits) && this.edits.length > 0;
+        if (hasEdits) {
+          try {
+            const redactedBlob = await requestRedactedPdf(fileBlob, this.edits, exportName);
+            if (redactedBlob && redactedBlob.size > 0) {
+              triggerBrowserDownload(redactedBlob, exportName);
+              return redactedBlob;
+            }
+            throw new Error('Server returned empty response.');
+          } catch (backendErr) {
+            console.error('[documentStore] Backend /api/export/redact failed:', backendErr);
+            this.errorMessage = 'Server unavailable. Export blocked so hidden text is not leaked.';
+            throw new Error(this.errorMessage);
           }
-        } catch (backendErr) {
-          console.warn('[documentStore] Backend /api/export/redact failed or offline, attempting client fallback:', backendErr);
         }
 
-        // 2. Fallback: Pure client-side in-browser PDF modification using pdf-lib
+        // 2. Client-side export for documents without text edits (e.g. view settings / userRotations)
         const modifiedBytes = await exportModifiedPdf(buffer, this.edits, { userRotations });
         const blob = new Blob([modifiedBytes], { type: 'application/pdf' });
         triggerBrowserDownload(blob, exportName);
@@ -707,18 +713,23 @@ export const useDocumentStore = defineStore('document', {
         let modifiedBytes = null;
 
         // 1. Primary: Route through backend PDFBox true token-stripping endpoint
-        try {
-          const redactedBlob = await requestRedactedPdf(fileBlob, editsToApply, targetFilename);
-          if (redactedBlob && redactedBlob.size > 0) {
-            const arrayBuf = await redactedBlob.arrayBuffer();
-            modifiedBytes = new Uint8Array(arrayBuf);
+        const hasEdits = Array.isArray(editsToApply) && editsToApply.length > 0;
+        if (hasEdits) {
+          try {
+            const redactedBlob = await requestRedactedPdf(fileBlob, editsToApply, targetFilename);
+            if (redactedBlob && redactedBlob.size > 0) {
+              const arrayBuf = await redactedBlob.arrayBuffer();
+              modifiedBytes = new Uint8Array(arrayBuf);
+            } else {
+              throw new Error('Server returned empty response.');
+            }
+          } catch (backendErr) {
+            console.error('[documentStore] Backend /api/export/redact failed:', backendErr);
+            this.errorMessage = 'Server unavailable. Export blocked so hidden text is not leaked.';
+            throw new Error(this.errorMessage);
           }
-        } catch (backendErr) {
-          console.warn('[documentStore] Backend /api/export/redact failed or offline, falling back to pdf-lib:', backendErr);
-        }
-
-        // 2. Fallback: Bake modifications into PDF binary via pdf-lib if backend unavailable
-        if (!modifiedBytes) {
+        } else {
+          // Documents without text edits: client-side view modification (e.g. userRotations)
           modifiedBytes = await exportModifiedPdf(buffer, editsToApply, { userRotations });
         }
 

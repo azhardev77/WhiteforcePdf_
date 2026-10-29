@@ -577,6 +577,9 @@ async function handleExport() {
     showExportToast('PDF modified and downloaded successfully!');
   } catch (err) {
     console.error('Export failed:', err);
+    if (!documentStore.errorMessage) {
+      documentStore.errorMessage = err.message || 'Failed to export document.';
+    }
   }
 }
 

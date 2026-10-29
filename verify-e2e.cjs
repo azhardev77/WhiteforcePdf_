@@ -501,6 +501,49 @@ const fs = require('fs');
     console.log('[PASS] Requirement 4: Exported PDF generated and downloaded cleanly.');
 
     // =========================================================================
+    // TASK A1: Backend Export/Redact Failure Blocks Export (No Leaks)
+    // =========================================================================
+    console.log('\n--- VERIFYING TASK A1: Backend Redaction Route Blocked Export Failure ---');
+    await page.route('**/api/export/redact', route => {
+      console.log('[E2E Mock] Intercepted and aborting /api/export/redact');
+      route.abort('failed');
+    });
+
+    let unexpectedDownload = false;
+    const downloadListener = () => { unexpectedDownload = true; };
+    page.on('download', downloadListener);
+
+    console.log('Clicking Export PDF button while backend route is blocked...');
+    await exportBtn.click();
+
+    // Verify error banner is visible and contains the exact required error text
+    const errorBanner = page.locator('.error-banner');
+    await errorBanner.waitFor({ state: 'visible', timeout: 5000 });
+    const bannerText = await errorBanner.innerText();
+    console.log(`Error Banner Text: "${bannerText.trim()}"`);
+
+    const expectedMsg = 'Server unavailable. Export blocked so hidden text is not leaked.';
+    if (!bannerText.includes(expectedMsg)) {
+      throw new Error(`TASK A1 FAILED: Expected error banner to contain "${expectedMsg}", got "${bannerText}"`);
+    }
+
+    // Wait 1.5 seconds to confirm no download occurred
+    await page.waitForTimeout(1500);
+    page.off('download', downloadListener);
+
+    if (unexpectedDownload) {
+      throw new Error('TASK A1 FAILED: Unexpected file download occurred when backend was blocked!');
+    }
+    console.log('[PASS] Task A1: Error banner displayed ("Server unavailable. Export blocked so hidden text is not leaked.") and download was blocked.');
+
+    // Clear error banner for subsequent test steps
+    const dismissBtn = page.locator('.btn-dismiss-error');
+    if (await dismissBtn.isVisible()) {
+      await dismissBtn.click();
+    }
+    await page.unroute('**/api/export/redact');
+
+    // =========================================================================
     // REQUIREMENT 7: Resume Header Cross-Column & Multi-Line Layout Verification
     // (`resume.pdf`: 20pt Left Heading vs 9pt Right Contact & LinkedIn)
     // =========================================================================
