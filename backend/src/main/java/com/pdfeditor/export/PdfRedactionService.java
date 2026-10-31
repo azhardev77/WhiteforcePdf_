@@ -44,6 +44,7 @@ public class PdfRedactionService {
 
     private static final float RIGHT_PAGE_MARGIN = 36.0f; // Right margin (0.5 inch)
     private static final float LINE_HEIGHT_FACTOR = 1.20f;
+    public static final float MIN_AUTO_SHRINK_FONT_SIZE = 6.0f;
 
     private final Map<String, byte[]> fontBytesMap = new ConcurrentHashMap<>();
     private final ThreadLocal<Integer> lastReplacedCharCount = ThreadLocal.withInitial(() -> 0);
@@ -62,6 +63,7 @@ public class PdfRedactionService {
         }
 
         try (PDDocument doc = Loader.loadPDF(originalPdfBytes)) {
+            final int inputPageCount = doc.getNumberOfPages();
             Map<String, PDType0Font> docFontCache = new HashMap<>();
             int totalReplacedCount = 0;
 
@@ -73,12 +75,6 @@ public class PdfRedactionService {
                 editsByPage.computeIfAbsent(edit.getPageNumber(), k -> new ArrayList<>()).add(edit);
             }
 
-            int maxRequestedPage = editsByPage.keySet().stream().mapToInt(Integer::intValue).max().orElse(doc.getNumberOfPages());
-            while (doc.getNumberOfPages() < maxRequestedPage) {
-                PDPage lastPage = doc.getPage(doc.getNumberOfPages() - 1);
-                PDRectangle templateBox = lastPage.getCropBox() != null ? lastPage.getCropBox() : lastPage.getMediaBox();
-                doc.addPage(new PDPage(templateBox != null ? templateBox : PDRectangle.A4));
-            }
             int numPages = doc.getNumberOfPages();
             for (Map.Entry<Integer, List<TextRedactionEdit>> entry : editsByPage.entrySet()) {
                 int pageNumber = entry.getKey();
@@ -128,16 +124,26 @@ public class PdfRedactionService {
                     String fontFamily = style != null ? style.fontFamily() : null;
                     PDType0Font font = selectFont(doc, docFontCache, fontFamily, bold, italic);
                     PDType0Font fallbackFont = getFallbackFont(doc, docFontCache);
-                    float lineHeight = fontSize * LINE_HEIGHT_FACTOR;
+                    String newText = edit.getNewText();
+                    ProcessedText processedNew = prepareText(newText, font, fallbackFont);
+                    totalReplacedCount += processedNew.replacedCount;
 
                     // Wrapping ke liye maximum width:
                     // Agar text original box mein nahi aata, toh page ke right margin tak wrap hone
                     // ki jagah dein
                     float maxAllowedWidth = Math.max(boxW, pageW - boxX - RIGHT_PAGE_MARGIN);
 
-                    String newText = edit.getNewText();
-                    ProcessedText processedNew = prepareText(newText, font, fallbackFont);
-                    totalReplacedCount += processedNew.replacedCount;
+                    // In-place bbox replacement: calculate string width against target box width;
+                    // if it overflows, shrink font size down to minimum 6.0pt floor.
+                    if (boxW > 0 && processedNew.text != null && !processedNew.text.isEmpty()) {
+                        float stringWidth = safeGetStringWidth(font, fallbackFont, processedNew.text, fontSize);
+                        if (stringWidth > boxW && stringWidth <= maxAllowedWidth) {
+                            fontSize = calculateShrunkFontSize(font, fallbackFont, processedNew.text, fontSize, boxW);
+                        }
+                    }
+
+                    float lineHeight = fontSize * LINE_HEIGHT_FACTOR;
+
                     List<String> wrappedLines = wrapTextToWidth(processedNew.text, font, fallbackFont, fontSize, maxAllowedWidth);
 
                     ProcessedText processedOrig = prepareText(edit.getOriginalText(), font, fallbackFont);
@@ -253,10 +259,65 @@ public class PdfRedactionService {
             }
 
             lastReplacedCharCount.set(totalReplacedCount);
+
+            int outputPageCount = doc.getNumberOfPages();
+            if (inputPageCount != outputPageCount) {
+                throw new IllegalStateException(String.format(
+                        "Page Count Invariant violated: input document has %d pages, but output document has %d pages",
+                        inputPageCount, outputPageCount));
+            }
+
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             doc.save(baos);
-            return baos.toByteArray();
+            byte[] outputPdfBytes = baos.toByteArray();
+
+            // Post-save verification: load serialized bytes to ensure page count invariant strictly holds
+            try (PDDocument verifiedDoc = Loader.loadPDF(outputPdfBytes)) {
+                int verifiedPages = verifiedDoc.getNumberOfPages();
+                if (verifiedPages != inputPageCount) {
+                    throw new IllegalStateException(String.format(
+                            "Page Count Invariant violated: input document has %d pages, but serialized output has %d pages",
+                            inputPageCount, verifiedPages));
+                }
+            }
+
+            return outputPdfBytes;
         }
+    }
+
+    /**
+     * Calculates the adjusted font size for in-place bbox replacement.
+     * If the replacement text string width exceeds target box width, shrinks font size
+     * proportionally down to a floor of 6.0pt.
+     *
+     * @param font primary font
+     * @param fallbackFont fallback font for missing glyphs
+     * @param text replacement text
+     * @param initialFontSize initial font size in pt
+     * @param targetBoxWidth target bounding box width in PDF points
+     * @return adjusted font size (>= 6.0pt floor unless initialFontSize was already lower)
+     */
+    public float calculateShrunkFontSize(PDType0Font font, PDType0Font fallbackFont,
+                                         String text, float initialFontSize, float targetBoxWidth) {
+        if (targetBoxWidth <= 0 || text == null || text.isEmpty() || initialFontSize <= MIN_AUTO_SHRINK_FONT_SIZE) {
+            return initialFontSize;
+        }
+
+        float maxLineWidth = 0.0f;
+        String[] lines = text.split("\r?\n");
+        for (String line : lines) {
+            float w = safeGetStringWidth(font, fallbackFont, line, initialFontSize);
+            if (w > maxLineWidth) {
+                maxLineWidth = w;
+            }
+        }
+
+        if (maxLineWidth <= targetBoxWidth) {
+            return initialFontSize;
+        }
+
+        float scaledFontSize = (float) (initialFontSize * ((double) targetBoxWidth / (double) maxLineWidth));
+        return Math.max(MIN_AUTO_SHRINK_FONT_SIZE, scaledFontSize);
     }
 
     private byte[] getFontBytes(String filename) throws IOException {

@@ -418,5 +418,115 @@ class PdfRedactionServiceTest {
             assertThat(extracted).contains("5,000");
         }
     }
+
+    @Test
+    @DisplayName("Auto font shrinking: Replacement text overflowing target box width shrinks font size down to 6.0pt floor")
+    void testAutoFontShrinkWhenReplacementTextOverflowsBbox() throws IOException {
+        byte[] originalPdf = createTestPdf("Tender #100");
+        // Target box width 100 pt
+        double[] bbox = new double[]{50.0, 85.0, 100.0, 25.0};
+        Style style = Style.of("Helvetica-Bold", 14.0, true, false, "#000000");
+
+        // "TENDER SPECIFICATION AMENDMENT NOTICE NO 100" at 14pt is ~300pt wide, exceeding 100pt box
+        String replacement = "TENDER SPECIFICATION AMENDMENT NOTICE NO 100";
+        TextRedactionEdit edit = new TextRedactionEdit(
+                1,
+                bbox,
+                "Tender #100",
+                replacement,
+                style,
+                "#FFFFFF"
+        );
+
+        byte[] modifiedPdf = pdfRedactionService.redactAndReplace(originalPdf, List.of(edit));
+        assertThat(modifiedPdf).isNotNull().isNotEmpty();
+
+        try (PDDocument doc = Loader.loadPDF(modifiedPdf)) {
+            assertThat(doc.getNumberOfPages()).isEqualTo(1);
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extracted = stripper.getText(doc);
+            assertThat(extracted).contains("TENDER SPECIFICATION AMENDMENT NOTICE NO 100");
+        }
+    }
+
+    @Test
+    @DisplayName("calculateShrunkFontSize respects 6.0pt floor and scales proportionally")
+    void testCalculateShrunkFontSizeFloorAndProportionality() throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            java.io.InputStream is = getClass().getResourceAsStream("/fonts/LiberationSans-Regular.ttf");
+            org.apache.pdfbox.pdmodel.font.PDType0Font font = org.apache.pdfbox.pdmodel.font.PDType0Font.load(doc, is);
+
+            // Case 1: Text fits comfortably inside box (no shrinking)
+            float size1 = pdfRedactionService.calculateShrunkFontSize(font, null, "Short text", 12.0f, 200.0f);
+            assertThat(size1).isEqualTo(12.0f);
+
+            // Case 2: Text moderately overflows box (should shrink to fit, > 6.0pt)
+            // "Moderate length line of text" at 16pt is ~180pt wide. target box = 90pt -> should shrink to ~8pt
+            float size2 = pdfRedactionService.calculateShrunkFontSize(font, null, "Moderate length line of text", 16.0f, 90.0f);
+            assertThat(size2).isLessThan(16.0f);
+            assertThat(size2).isGreaterThan(6.0f);
+
+            // Case 3: Text severely overflows box (should hit 6.0pt floor and NOT go lower)
+            String severeOverflow = "Extremely long paragraph text designed to massively exceed the narrow bounding box target width completely";
+            float size3 = pdfRedactionService.calculateShrunkFontSize(font, null, severeOverflow, 14.0f, 40.0f);
+            assertThat(size3).isEqualTo(PdfRedactionService.MIN_AUTO_SHRINK_FONT_SIZE);
+            assertThat(size3).isEqualTo(6.0f);
+
+            // Case 4: Initial font size already at or below 6.0pt does not increase
+            float size4 = pdfRedactionService.calculateShrunkFontSize(font, null, severeOverflow, 5.0f, 40.0f);
+            assertThat(size4).isEqualTo(5.0f);
+        }
+    }
+
+    @Test
+    @DisplayName("Page count invariant: Input page count strictly equals output page count on multi-page documents")
+    void testPageCountInvariantStrictlyPreservedMultiPage() throws IOException {
+        byte[] multiPagePdf;
+        try (PDDocument doc = new PDDocument()) {
+            for (int i = 0; i < 3; i++) {
+                PDPage page = new PDPage(PDRectangle.A4);
+                doc.addPage(page);
+                try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                    cs.beginText();
+                    cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12.0f);
+                    cs.newLineAtOffset(50.0f, 750.0f);
+                    cs.showText("Page " + (i + 1) + " Original Content");
+                    cs.endText();
+                }
+            }
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            doc.save(baos);
+            multiPagePdf = baos.toByteArray();
+        }
+
+        // Apply edits to page 1 and page 3
+        TextRedactionEdit editPage1 = new TextRedactionEdit(
+                1,
+                new double[]{50.0, 85.0, 200.0, 20.0},
+                "Page 1 Original Content",
+                "Page 1 Modified Content",
+                Style.of("Helvetica", 12.0, false, false, "#000000")
+        );
+        TextRedactionEdit editPage3 = new TextRedactionEdit(
+                3,
+                new double[]{50.0, 85.0, 200.0, 20.0},
+                "Page 3 Original Content",
+                "Page 3 Modified Content",
+                Style.of("Helvetica", 12.0, false, false, "#000000")
+        );
+
+        byte[] modified = pdfRedactionService.redactAndReplace(multiPagePdf, List.of(editPage1, editPage3));
+        assertThat(modified).isNotNull().isNotEmpty();
+
+        try (PDDocument doc = Loader.loadPDF(modified)) {
+            // Strictly 3 pages: page count invariant verification
+            assertThat(doc.getNumberOfPages()).isEqualTo(3);
+            PDFTextStripper stripper = new PDFTextStripper();
+            String fullText = stripper.getText(doc);
+            assertThat(fullText).contains("Page 1 Modified Content");
+            assertThat(fullText).contains("Page 2 Original Content");
+            assertThat(fullText).contains("Page 3 Modified Content");
+        }
+    }
 }
 

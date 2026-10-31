@@ -1,0 +1,24 @@
+## 2026-10-31 - Task 1 Execution Summary
+
+### Completed:
+- Audited and enhanced `backend/src/main/java/com/pdfeditor/export/PdfRedactionService.java`:
+  1. Added `MIN_AUTO_SHRINK_FONT_SIZE = 6.0f` floor constant.
+  2. Implemented `calculateShrunkFontSize(PDType0Font font, PDType0Font fallbackFont, String text, float initialFontSize, float targetBoxWidth)`:
+     - Calculates maximum line width against the target bounding box width using PDFBox 3.0.2 font APIs.
+     - Proportionally calculates shrunk font size down to the 6.0pt floor (`Math.max(6.0f, scaledFontSize)`).
+  3. Integrated auto-font shrinking into in-place bounding box replacements in `redactAndReplace`.
+  4. Enforced strict Page Count Invariant verification (`inputPages == outputPages`):
+     - Removed obsolete WIP `while (doc.getNumberOfPages() < maxRequestedPage) doc.addPage(...)` loop.
+     - Recorded `inputPageCount = doc.getNumberOfPages()`.
+     - Validated `doc.getNumberOfPages() == inputPageCount` before export.
+     - Reloaded and verified the serialized output PDF bytes using `Loader.loadPDF(outputPdfBytes)` to guarantee empirical page count invariance. Throws `IllegalStateException` on any discrepancy.
+- Expanded `backend/src/test/java/com/pdfeditor/PdfRedactionServiceTest.java`:
+  1. Added `testAutoFontShrinkWhenReplacementTextOverflowsBbox()` to verify in-place text replacement auto-shrinking and page count retention.
+  2. Added `testCalculateShrunkFontSizeFloorAndProportionality()` to verify no-shrink, proportional shrinking, 6.0pt floor enforcement, and preservation of initial font sizes <= 6.0pt.
+  3. Added `testPageCountInvariantStrictlyPreservedMultiPage()` to verify strict page count preservation across multi-page documents with selective redactions.
+- Marked Task 1 as complete `[x]` in `PRD.md`.
+
+### Verification Results:
+- `cd backend; mvn test-compile` -> BUILD SUCCESS (Total time: 17.049 s)
+- `cd backend; mvn test -Dtest=PdfRedactionServiceTest` -> 12 tests run, 0 failures, 0 errors, 0 skipped
+- `cd backend; mvn test` -> Full test suite: 109 tests run, 0 failures, 0 errors, 0 skipped
