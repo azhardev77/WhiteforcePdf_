@@ -22,3 +22,40 @@
 - `cd backend; mvn test-compile` -> BUILD SUCCESS (Total time: 17.049 s)
 - `cd backend; mvn test -Dtest=PdfRedactionServiceTest` -> 12 tests run, 0 failures, 0 errors, 0 skipped
 - `cd backend; mvn test` -> Full test suite: 109 tests run, 0 failures, 0 errors, 0 skipped
+
+
+## 2026-10-31 - Task 2 Execution Summary
+
+### Completed:
+- Implemented `updateFromTipTap(tipTapJson)` in `frontend/src/stores/document.js`:
+  1. Parses TipTap ProseMirror document AST into `DocumentModel` format via `convertTipTapToDocumentModel`.
+  2. Builds lookup index of existing blocks by both block ID and `(pageNumber, index)` position.
+  3. Matches updated text blocks against existing `documentModel.blocks` by ID, with index-based fallback matching if TipTap omitted or regenerated node IDs.
+  4. Preserves all coordinate metadata without wiping:
+     - `bbox`: Restores original bounding box `[x, y, width, height]` if TipTap node lacked bbox or emitted zeroed coordinates.
+     - `originalBbox`: Retains baseline coordinate reference.
+     - `x, y, width, height`: Preserves explicit layout coordinates.
+     - `originalX, originalY, originalWidth, originalHeight`, `originalPdf*`, and `custom*` coordinate properties are retained.
+     - `lines` array and baseline `originalText` are preserved.
+  5. Text & Style Diff Detection:
+     - Implemented `extractBlockText(block)` supporting runs, tables, and fallback text.
+     - Implemented `extractBlockStyle(block, defaultStyle)` and `nodeHasMarks(node)` to detect true formatting changes while avoiding false positive diffs when nodes lack explicit marks.
+  6. Dirty & Edited Flags Synchronization:
+     - Sets `block.isEdited = true` and `block.isDirty = true` when text or styles change.
+     - Updates per-paragraph patches via `this.setPatch(pageNumber, block.id, patchData)` for modular revert and canvas editor state.
+     - Dispatches redaction edit records via `this.recordEdit(...)` so `/api/export/redact`, `downloadPdf()`, and `saveDocument()` immediately reflect edits with proper bounding boxes and replacement text.
+     - Clears patch and edit records when text is reverted to original.
+     - Automatically creates whiteout redactions (`newText: ''`) for any original blocks deleted in TipTap.
+     - Sets `this.isCommittedSave = false` when changes exist.
+  7. Marked Task 2 as complete `[x]` in `PRD.md`.
+  8. Created unit test suite `frontend/test-tiptap-update.js` covering bounding box preservation, index fallback matching, revert restoration, and block deletion handling.
+
+### Verification Results:
+- `cd frontend; node test-converters.js` -> SUCCESS: All bidirectional AST converter assertions passed cleanly.
+- `cd frontend; node test-tiptap-update.js` -> 4/4 test suites passed:
+  - Test 1: updateFromTipTap with text edit and missing bbox in TipTap (PASSED)
+  - Test 2: Index fallback matching (PASSED)
+  - Test 3: Reverting text to original (PASSED)
+  - Test 4: Block deletion handling (PASSED)
+- `cd frontend; npm run build` -> BUILD SUCCESS (vite v5.4.21, 306 modules transformed, built in 6.13s).
+- `cd backend; mvn test-compile` -> BUILD SUCCESS (Total time: 14.978 s).

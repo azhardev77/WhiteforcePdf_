@@ -5,6 +5,53 @@ import sessionStorageService from '@/services/sessionStorageService';
 import { extractPdf, extractSample, fetchRawSamplePdf } from '@/api/documents';
 import { exportPdf, exportRedactedPdf, requestRedactedPdf, exportHtml } from '@/api/export';
 import { fetchAppSessionPdf, fetchAppSessionInfo } from '@/api/sessions';
+import { convertTipTapToDocumentModel } from '@/utils/tipTapToJson';
+
+/**
+ * Extracts plain text from a Block or Cell structure.
+ */
+function extractBlockText(block) {
+  if (!block) return '';
+  if (Array.isArray(block.runs) && block.runs.length > 0) {
+    return block.runs.map(r => r.text || '').join('');
+  }
+  if (block.type === 'TABLE' && Array.isArray(block.cells)) {
+    return block.cells
+      .map(row => (Array.isArray(row) ? row.map(cell => extractBlockText(cell)).join('\t') : ''))
+      .join('\n');
+  }
+  return typeof block.text === 'string' ? block.text : '';
+}
+
+/**
+ * Extracts typography and color styles from a Block.
+ */
+function extractBlockStyle(block, defaultStyle = {}) {
+  const firstRun = block?.runs?.find(r => r && r.style) || null;
+  const runStyle = firstRun?.style || {};
+  return {
+    fontSize: runStyle.fontSize || block?.fontSize || block?.customFontSize || defaultStyle.fontSize || 12,
+    fontFamily: runStyle.fontFamily || block?.fontFamily || block?.fontName || defaultStyle.fontFamily || 'Helvetica',
+    bold: runStyle.bold !== undefined ? runStyle.bold : (block?.bold !== undefined ? block.bold : Boolean(defaultStyle.bold)),
+    italic: runStyle.italic !== undefined ? runStyle.italic : (block?.italic !== undefined ? block.italic : Boolean(defaultStyle.italic)),
+    color: runStyle.color || block?.color || block?.customColor || defaultStyle.color || '#000000'
+  };
+}
+
+/**
+ * Checks whether a TipTap AST node contains explicit styling marks.
+ */
+function nodeHasMarks(node) {
+  if (!node) return false;
+  if (Array.isArray(node.content)) {
+    return node.content.some(child => {
+      if (Array.isArray(child.marks) && child.marks.length > 0) return true;
+      if (Array.isArray(child.content)) return nodeHasMarks(child);
+      return false;
+    });
+  }
+  return false;
+}
 
 export const useDocumentStore = defineStore('document', {
   state: () => ({
@@ -843,6 +890,296 @@ export const useDocumentStore = defineStore('document', {
      */
     resetDocument() {
       this.purgeDocumentState();
+    },
+
+    /**
+     * Parses TipTap document AST updates into DocumentModel state while strictly preserving
+     * original bounding box coordinate metadata (x, y, width, height, bbox, originalBbox),
+     * and sets dirty/edited flags appropriately so save and export functions reflect changes.
+     *
+     * @param {Object} tipTapJson - TipTap AST root document node { type: "doc", content: [...] }
+     * @returns {Object|null} Reconstructed DocumentModel
+     */
+    updateFromTipTap(tipTapJson) {
+      if (!tipTapJson) return null;
+
+      // 1. Index existing blocks by ID and by pageNumber_index fallback
+      const existingBlocksById = new Map();
+      const existingBlocksByIndex = new Map();
+
+      if (this.documentModel?.pages) {
+        for (const page of this.documentModel.pages) {
+          const pageNum = page.pageNumber || 1;
+          const blocks = Array.isArray(page.blocks) ? page.blocks : [];
+          blocks.forEach((blk, idx) => {
+            if (blk.id) {
+              existingBlocksById.set(blk.id, { block: blk, pageNumber: pageNum, index: idx });
+            }
+            existingBlocksByIndex.set(`${pageNum}_${idx}`, { block: blk, pageNumber: pageNum, index: idx });
+          });
+        }
+      }
+
+      // Map raw TipTap nodes by blockId and pageNumber_index for attribute & mark inspection
+      const tipTapNodeMap = new Map();
+      if (Array.isArray(tipTapJson.content)) {
+        let currPg = 1;
+        let blkIdx = 0;
+        for (const node of tipTapJson.content) {
+          if (!node) continue;
+          if (node.type === 'pageBreak') {
+            currPg = parseInt(node.attrs?.pageNumber, 10) || (currPg + 1);
+            blkIdx = 0;
+            continue;
+          }
+          if (node.attrs?.pageNumber) {
+            const p = parseInt(node.attrs.pageNumber, 10);
+            if (p && p !== currPg) {
+              currPg = p;
+              blkIdx = 0;
+            }
+          }
+          if (node.attrs?.blockId) {
+            tipTapNodeMap.set(node.attrs.blockId, node);
+          }
+          tipTapNodeMap.set(`${currPg}_${blkIdx}`, node);
+          blkIdx++;
+        }
+      }
+
+      // 2. Parse TipTap AST back into DocumentModel format
+      const parsedModel = convertTipTapToDocumentModel(tipTapJson, this.documentModel);
+      if (!parsedModel || !Array.isArray(parsedModel.pages)) {
+        return null;
+      }
+
+      let hasAnyChanges = false;
+      const seenBlockIds = new Set();
+
+      // 3. Match blocks against existing blocks to preserve coordinates and detect edits
+      for (const page of parsedModel.pages) {
+        const pageNum = page.pageNumber || 1;
+        const pageBlocks = Array.isArray(page.blocks) ? page.blocks : [];
+
+        for (let idx = 0; idx < pageBlocks.length; idx++) {
+          const block = pageBlocks[idx];
+          if (!block) continue;
+
+          // Attempt matching by blockId first, then by (pageNumber, index)
+          let match = block.id ? existingBlocksById.get(block.id) : null;
+          if (!match) {
+            match = existingBlocksByIndex.get(`${pageNum}_${idx}`);
+            if (match && match.block) {
+              // Re-assign original block ID since this block matched by index fallback
+              block.id = match.block.id;
+            }
+          }
+
+          const existingBlock = match ? match.block : null;
+          if (existingBlock) {
+            block.id = existingBlock.id;
+            seenBlockIds.add(block.id);
+
+            // Coordinate metadata preservation:
+            // Check if parsed block has non-zero bbox; if not, restore from existingBlock
+            const hasParsedBbox = Array.isArray(block.bbox) && block.bbox.length === 4 &&
+              (block.bbox[0] !== 0 || block.bbox[1] !== 0 || block.bbox[2] !== 0 || block.bbox[3] !== 0);
+
+            if (!hasParsedBbox && existingBlock.bbox) {
+              block.bbox = Array.isArray(existingBlock.bbox) ? [...existingBlock.bbox] : existingBlock.bbox;
+            }
+
+            // Preserve originalBbox
+            block.originalBbox = existingBlock.originalBbox || (existingBlock.bbox ? [...existingBlock.bbox] : block.bbox);
+
+            // Preserve explicit coordinate properties: x, y, width, height
+            if (existingBlock.x !== undefined) block.x = existingBlock.x;
+            else if (Array.isArray(block.bbox)) block.x = block.bbox[0];
+
+            if (existingBlock.y !== undefined) block.y = existingBlock.y;
+            else if (Array.isArray(block.bbox)) block.y = block.bbox[1];
+
+            if (existingBlock.width !== undefined) block.width = existingBlock.width;
+            else if (Array.isArray(block.bbox)) block.width = block.bbox[2];
+
+            if (existingBlock.height !== undefined) block.height = existingBlock.height;
+            else if (Array.isArray(block.bbox)) block.height = block.bbox[3];
+
+            // Preserve original coordinate references
+            if (existingBlock.originalX !== undefined) block.originalX = existingBlock.originalX;
+            if (existingBlock.originalY !== undefined) block.originalY = existingBlock.originalY;
+            if (existingBlock.originalWidth !== undefined) block.originalWidth = existingBlock.originalWidth;
+            if (existingBlock.originalHeight !== undefined) block.originalHeight = existingBlock.originalHeight;
+
+            if (existingBlock.originalPdfX !== undefined) block.originalPdfX = existingBlock.originalPdfX;
+            if (existingBlock.originalPdfY !== undefined) block.originalPdfY = existingBlock.originalPdfY;
+            if (existingBlock.originalPdfWidth !== undefined) block.originalPdfWidth = existingBlock.originalPdfWidth;
+            if (existingBlock.originalPdfHeight !== undefined) block.originalPdfHeight = existingBlock.originalPdfHeight;
+
+            if (existingBlock.customX !== undefined) block.customX = existingBlock.customX;
+            if (existingBlock.customY !== undefined) block.customY = existingBlock.customY;
+            if (existingBlock.customWidth !== undefined) block.customWidth = existingBlock.customWidth;
+            if (existingBlock.customFontSize !== undefined) block.customFontSize = existingBlock.customFontSize;
+            if (existingBlock.customColor !== undefined) block.customColor = existingBlock.customColor;
+
+            if (existingBlock.lines && !block.lines) block.lines = existingBlock.lines;
+
+            // Preserve baseline originalText
+            block.originalText = existingBlock.originalText !== undefined
+              ? existingBlock.originalText
+              : extractBlockText(existingBlock);
+          } else {
+            // Newly created block in TipTap
+            if (block.id) {
+              seenBlockIds.add(block.id);
+            }
+            if (Array.isArray(block.bbox)) {
+              if (block.x === undefined) block.x = block.bbox[0];
+              if (block.y === undefined) block.y = block.bbox[1];
+              if (block.width === undefined) block.width = block.bbox[2];
+              if (block.height === undefined) block.height = block.bbox[3];
+            }
+            block.originalBbox = block.bbox ? [...block.bbox] : [0, 0, 0, 0];
+            block.originalText = '';
+          }
+
+          // Ensure bbox is always a 4-element array and sync with x, y, width, height
+          if (!Array.isArray(block.bbox) || block.bbox.length !== 4) {
+            block.bbox = [block.x || 0, block.y || 0, block.width || 0, block.height || 0];
+          }
+          if (block.x === undefined) block.x = block.bbox[0];
+          if (block.y === undefined) block.y = block.bbox[1];
+          if (block.width === undefined) block.width = block.bbox[2];
+          if (block.height === undefined) block.height = block.bbox[3];
+
+          // Text & style diff detection
+          const newText = extractBlockText(block);
+          block.text = newText;
+          const origText = block.originalText !== undefined ? block.originalText : '';
+
+          const defaultStyle = existingBlock ? extractBlockStyle(existingBlock) : {};
+          const rawTipTapNode = (block.id ? tipTapNodeMap.get(block.id) : null) || tipTapNodeMap.get(`${pageNum}_${idx}`);
+          const hasMarks = nodeHasMarks(rawTipTapNode);
+
+          let blockStyle;
+          let hasStyleDiff = false;
+          if (!hasMarks && existingBlock) {
+            blockStyle = { ...defaultStyle };
+            hasStyleDiff = false;
+          } else {
+            blockStyle = extractBlockStyle(block, defaultStyle);
+            hasStyleDiff = Boolean(
+              (blockStyle.fontSize && defaultStyle.fontSize && Math.abs(blockStyle.fontSize - defaultStyle.fontSize) > 0.1) ||
+              (blockStyle.fontFamily && defaultStyle.fontFamily && blockStyle.fontFamily !== defaultStyle.fontFamily) ||
+              (blockStyle.bold !== undefined && defaultStyle.bold !== undefined && blockStyle.bold !== defaultStyle.bold) ||
+              (blockStyle.italic !== undefined && defaultStyle.italic !== undefined && blockStyle.italic !== defaultStyle.italic) ||
+              (blockStyle.color && defaultStyle.color && blockStyle.color.toLowerCase() !== defaultStyle.color.toLowerCase())
+            );
+          }
+          const isModified = hasTextDiff || hasStyleDiff;
+
+          if (isModified) {
+            block.isEdited = true;
+            block.isDirty = true;
+            hasAnyChanges = true;
+
+            // 1. Update modular block patch
+            this.setPatch(pageNum, block.id, {
+              originalText: origText,
+              newText: newText,
+              fontSize: blockStyle.fontSize,
+              fontFamily: blockStyle.fontFamily,
+              bold: blockStyle.bold,
+              italic: blockStyle.italic,
+              color: blockStyle.color,
+              customFontSize: blockStyle.fontSize,
+              customColor: blockStyle.color,
+              isEdited: true,
+              isDirty: true
+            });
+
+            // 2. Record edit for redaction / export
+            const effBbox = Array.isArray(block.bbox) && block.bbox.length === 4
+              ? block.bbox
+              : [block.x || 0, block.y || 0, block.width || 0, block.height || 0];
+
+            this.recordEdit({
+              id: `redact-block-${block.id}`,
+              lineId: block.id,
+              pageNumber: pageNum,
+              bbox: effBbox,
+              originalBbox: block.originalBbox || effBbox,
+              originalText: origText,
+              newText: newText,
+              style: {
+                fontSize: blockStyle.fontSize || 12,
+                fontFamily: blockStyle.fontFamily || 'Helvetica',
+                bold: Boolean(blockStyle.bold),
+                italic: Boolean(blockStyle.italic),
+                color: blockStyle.color || '#000000'
+              },
+              isStyleModified: Boolean(hasStyleDiff),
+              transparentBackground: false
+            });
+          } else {
+            block.isEdited = false;
+            block.isDirty = false;
+            this.deletePatch(pageNum, block.id);
+            this.removeEdit(`redact-block-${block.id}`);
+          }
+        }
+      }
+
+      // 4. Handle any existing blocks that were deleted in TipTap
+      for (const [id, info] of existingBlocksById.entries()) {
+        if (!seenBlockIds.has(id)) {
+          const origBlock = info.block;
+          const origText = origBlock.originalText !== undefined ? origBlock.originalText : extractBlockText(origBlock);
+          if (origText && origText.trim().length > 0) {
+            hasAnyChanges = true;
+            const effBbox = Array.isArray(origBlock.bbox) && origBlock.bbox.length === 4
+              ? origBlock.bbox
+              : [origBlock.x || 0, origBlock.y || 0, origBlock.width || 0, origBlock.height || 0];
+
+            this.recordEdit({
+              id: `redact-block-${id}`,
+              lineId: id,
+              pageNumber: info.pageNumber,
+              bbox: effBbox,
+              originalBbox: origBlock.originalBbox || effBbox,
+              originalText: origText,
+              newText: '',
+              style: extractBlockStyle(origBlock),
+              isStyleModified: false,
+              transparentBackground: false
+            });
+
+            this.setPatch(info.pageNumber, id, {
+              originalText: origText,
+              newText: '',
+              isEdited: true,
+              isDirty: true
+            });
+          }
+        }
+      }
+
+      if (hasAnyChanges) {
+        this.isCommittedSave = false;
+      }
+
+      // 5. Carry over top-level document model properties
+      if (this.documentModel) {
+        if (this.documentModel.pageCount && !parsedModel.pageCount) {
+          parsedModel.pageCount = parsedModel.pages.length;
+        }
+        if (this.documentModel.fileName && !parsedModel.fileName) {
+          parsedModel.fileName = this.documentModel.fileName;
+        }
+      }
+
+      this.documentModel = parsedModel;
+      return parsedModel;
     }
   }
 });
