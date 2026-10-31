@@ -145,3 +145,35 @@
 - `cd backend; mvn test` -> Full backend test suite: 116 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS, Total time: 45.829 s).
 
 
+## 2026-10-31 - Resume PII Session Creation Timeout Resolution
+
+### Completed:
+- Investigated and resolved root causes of the 30-second timeout on Resume PII session creation (`POST /app/sessions` and `POST /api/v1/sessions` with `Mode == RESUME`):
+  1. Root Cause 1 (Regex Performance Bottleneck in `PiiDetector.java`):
+     - `PiiDetector.findPIISpans(text)` previously performed `text.substring(0, start)` for every email/phone match, copying the entire prefix of the document and running unanchored greedy lookback matching across megabytes of text, creating $O(N^2)$ CPU overhead.
+     - Replaced unbounded prefix extraction with a fixed 50-character lookback window `Math.max(0, start - 50)`, and adjusted match length arithmetic to run in strict $O(N)$ linear time.
+  2. Root Cause 2 (Catastrophic Regex Backtracking over Vector Streams in `ResumeRedactionService.java`):
+     - In `deepScrubRawStreams`, `PiiDetector.findPIISpans(content)` was executing against entire raw uncompressed PDF content streams containing thousands of graphic coordinates and vector drawing operators, causing catastrophic backtracking on phone number patterns.
+     - Added content length boundary (`content.length() <= 65536`) to protect against regex CPU hangs on massive vector drawing streams.
+  3. Root Cause 3 (Missing Redaction Timeout & Storage Fallback in `SessionService.java`):
+     - Wrapped `resumeRedactionService.redactResume` in a `CompletableFuture` bounded by an explicit 15-second timeout (`REDACTION_TIMEOUT_SECONDS = 15L`). If tripped, throws `SessionValidationException` (HTTP 422) with a descriptive message rather than blocking the servlet worker and exhausting the browser's 30s connection timeout.
+     - Added resilient `inMemoryStorage` (`ConcurrentHashMap<String, byte[]>`) fallback in `SessionService`. If disk or external storage is unavailable, unwritable, or offline, the session transparently stores PDF bytes in memory and logs a warning.
+     - Added in-memory retrieval in `getSessionPdfBytes(session)` and cleanup on TTL expiration in `getSession(id)`.
+  4. Backend Testing:
+     - Implemented `backend/src/test/java/com/pdfeditor/session/SessionServiceTest.java` verifying in-memory storage fallback and TTL expiration.
+- Frontend Error Handling & Navigation Protection:
+  1. `frontend/src/api/http.js`:
+     - Retained `err.response` and `err.status` on rejected Error objects so components have access to the exact API response payload and error message.
+  2. `frontend/src/api/sessions.js`:
+     - Validated input parameters in `createAppSession` and asserted `response.data.id` presence, throwing clear descriptive errors on failure.
+  3. `frontend/src/views/HomeView.vue`:
+     - Prevented premature routing to `/edit/:sessionId` when session creation or PII redaction fails.
+     - Kept the redact categories modal open on failure instead of prematurely closing and navigating to an unhydrated workspace.
+     - Added dedicated `.modal-error-banner` in the modal displaying the specific API error message returned by the backend.
+     - Added `isModalSubmitting` loading state with disabled controls and an inline spinner on "Continue to Editor" to prevent duplicate concurrent submissions.
+
+### Verification Results:
+- `cd backend; mvn test-compile` -> BUILD SUCCESS (Total time: 3.997 s).
+- `cd backend; mvn test "-Dtest=*Session*"` -> 20/20 session tests passed (`SessionControllerTest`, `SessionPhase3bVerificationTest`, `SessionResumeModeTest`, `SessionServiceTest`).
+- `cd backend; mvn test` -> Full backend test suite: 118 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS, Total time: 01:31 min).
+- `cd frontend; npm run build` -> BUILD SUCCESS (vite v5.4.21, 424 modules transformed, built in 10.44s).
