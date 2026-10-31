@@ -743,12 +743,14 @@ public class ResumeRedactionService {
                             }
                         }
 
-                        // Also find any matching category PII in content
-                        List<PiiDetector.PiiSpan> spans = PiiDetector.findPIISpans(content);
-                        for (PiiDetector.PiiSpan span : spans) {
-                            if (categorySet == null || categorySet.contains(span.getType().toLowerCase())) {
-                                content = content.replace(span.getMatch(), "");
-                                modified = true;
+                        // Also find any matching category PII in content (bounded to <= 65KB streams to avoid regex CPU hangs on massive vector drawing streams)
+                        if (content.length() <= 65536) {
+                            List<PiiDetector.PiiSpan> spans = PiiDetector.findPIISpans(content);
+                            for (PiiDetector.PiiSpan span : spans) {
+                                if (categorySet == null || categorySet.contains(span.getType().toLowerCase())) {
+                                    content = content.replace(span.getMatch(), "");
+                                    modified = true;
+                                }
                             }
                         }
 

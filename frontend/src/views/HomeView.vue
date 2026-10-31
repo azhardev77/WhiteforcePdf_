@@ -80,6 +80,18 @@
           </div>
 
           <div class="modal-body">
+            <!-- Modal Error Banner -->
+            <transition name="fade">
+              <div v-if="modalErrorMessage" class="modal-error-banner" data-testid="modal-error-banner">
+                <svg class="modal-error-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <div class="modal-error-text">{{ modalErrorMessage }}</div>
+              </div>
+            </transition>
+
             <div v-if="isLoadingCategories" class="categories-loading">
               <div class="spinner-large" style="width: 24px; height: 24px;" />
               <span>Loading categories...</span>
@@ -101,6 +113,7 @@
                     v-model="categoryToggles[cat.id]"
                     :id="'toggle-' + cat.id"
                     :data-testid="'toggle-' + cat.id"
+                    :disabled="isModalSubmitting"
                   />
                   <span class="toggle-slider" />
                 </div>
@@ -109,14 +122,23 @@
           </div>
 
           <div class="modal-footer">
-            <button type="button" class="btn-secondary" @click="cancelRedactDialog">Cancel</button>
+            <button
+              type="button"
+              class="btn-secondary"
+              :disabled="isModalSubmitting"
+              @click="cancelRedactDialog"
+            >
+              Cancel
+            </button>
             <button
               type="button"
               class="btn-primary btn-confirm-redact"
               data-testid="btn-confirm-redact"
+              :disabled="isModalSubmitting"
               @click="confirmRedactAndUpload"
             >
-              Continue to Editor
+              <span v-if="isModalSubmitting" class="spinner-inline" />
+              <span>{{ isModalSubmitting ? 'Redacting & Creating...' : 'Continue to Editor' }}</span>
             </button>
           </div>
         </div>
@@ -510,6 +532,8 @@ const fileInputRef = ref(null);
 const pendingUploadMode = ref('EDIT');
 
 const showRedactDialog = ref(false);
+const modalErrorMessage = ref('');
+const isModalSubmitting = ref(false);
 const isLoadingCategories = ref(false);
 const availableCategories = ref([
   { id: 'email', label: 'Email Addresses', default: true },
@@ -607,6 +631,8 @@ async function openRedactDialog(file) {
   pendingResumeFile.value = file;
   isLoadingCategories.value = true;
   showRedactDialog.value = true;
+  modalErrorMessage.value = '';
+  isModalSubmitting.value = false;
 
   try {
     const fetched = await fetchRedactionCategories();
@@ -640,14 +666,15 @@ async function openRedactDialog(file) {
 }
 
 function cancelRedactDialog() {
+  if (isModalSubmitting.value) return;
   showRedactDialog.value = false;
   pendingResumeFile.value = null;
+  modalErrorMessage.value = '';
+  isModalSubmitting.value = false;
 }
 
 async function confirmRedactAndUpload() {
-  showRedactDialog.value = false;
   const file = pendingResumeFile.value;
-  pendingResumeFile.value = null;
   if (!file) return;
 
   // Save toggle state to localStorage
@@ -659,7 +686,25 @@ async function confirmRedactAndUpload() {
 
   // Collect selected category IDs
   const selectedCategories = Object.keys(categoryToggles.value).filter(id => Boolean(categoryToggles.value[id]));
-  await uploadPdfFile(file, 'RESUME', selectedCategories);
+
+  isModalSubmitting.value = true;
+  modalErrorMessage.value = '';
+
+  try {
+    const result = await createAppSession(file, 'RESUME', selectedCategories);
+    if (!result?.id) {
+      throw new Error('Server failed to return a valid session ID.');
+    }
+    // Success: close modal and navigate to editor
+    showRedactDialog.value = false;
+    pendingResumeFile.value = null;
+    await router.push(`/edit/${encodeURIComponent(result.id)}`);
+  } catch (err) {
+    console.error('[HomeView] Resume session creation failed:', err);
+    modalErrorMessage.value = err.response?.data?.message || err.response?.data?.error || err.message || 'Failed to redact PII and create session.';
+  } finally {
+    isModalSubmitting.value = false;
+  }
 }
 
 function startUploadFlow(file, mode = 'EDIT') {
@@ -723,7 +768,7 @@ async function uploadPdfFile(file, mode = 'EDIT', redactCategories = null) {
     await router.push(`/edit/${encodeURIComponent(result.id)}`);
   } catch (err) {
     console.error('Session creation failed:', err);
-    errorMessage.value = err.response?.data?.message || err.message || 'Failed to create session.';
+    errorMessage.value = err.response?.data?.message || err.response?.data?.error || err.message || 'Failed to create session.';
   } finally {
     isProcessing.value = false;
   }
@@ -1882,5 +1927,50 @@ function copyActiveSnippet() {
 .btn-confirm-redact:hover {
   background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+}
+
+.modal-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #fca5a5;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.modal-error-icon {
+  width: 18px;
+  height: 18px;
+  color: #ef4444;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.modal-error-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.btn-confirm-redact:disabled,
+.btn-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.spinner-inline {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 6px;
+  vertical-align: middle;
 }
 </style>

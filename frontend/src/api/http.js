@@ -38,7 +38,10 @@ api.interceptors.response.use(
     } else if (error.message) {
       message = error.message;
     }
-    return Promise.reject(new Error(message));
+    const err = new Error(message);
+    err.response = error.response;
+    err.status = error.response?.status;
+    return Promise.reject(err);
   }
 );
 

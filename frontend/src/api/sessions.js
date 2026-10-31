@@ -19,6 +19,10 @@ export async function fetchRedactionCategories() {
  * @returns {Promise<{ id: string }>}
  */
 export async function createAppSession(file, mode = 'EDIT', redactCategories = null) {
+  if (!file) {
+    throw new Error('A PDF file is required to create a session.');
+  }
+
   const formData = new FormData();
   formData.append('file', file);
   formData.append('mode', mode);
@@ -37,6 +41,10 @@ export async function createAppSession(file, mode = 'EDIT', redactCategories = n
       'Content-Type': 'multipart/form-data'
     }
   });
+
+  if (!response?.data || !response.data.id) {
+    throw new Error(response?.data?.message || 'Server failed to return a valid session ID.');
+  }
 
   return response.data;
 }

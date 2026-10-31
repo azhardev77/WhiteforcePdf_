@@ -1,5 +1,7 @@
 package com.pdfeditor.session;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -13,12 +15,20 @@ import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 @Service
 public class SessionService {
 
+    private static final Logger log = LoggerFactory.getLogger(SessionService.class);
+    private static final long REDACTION_TIMEOUT_SECONDS = 15L;
+
     private final ConcurrentHashMap<String, PdfSession> sessionMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, byte[]> inMemoryStorage = new ConcurrentHashMap<>();
     private final SessionProperties properties;
     private final SessionValidator sessionValidator;
     private final com.pdfeditor.rules.ResumeRedactionService resumeRedactionService;
@@ -51,16 +61,47 @@ public class SessionService {
     }
 
     public PdfSession createSession(MultipartFile file, Mode mode, Source source, String clientId, List<String> redactCategories) throws IOException {
-        byte[] validPdfBytes = sessionValidator.validate(file);
+        byte[] pdfBytes = sessionValidator.validate(file);
 
         if (mode == Mode.RESUME && resumeRedactionService != null) {
-            validPdfBytes = resumeRedactionService.redactResume(validPdfBytes, redactCategories);
+            final byte[] inputBytes = pdfBytes;
+            try {
+                CompletableFuture<byte[]> redactFuture = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return resumeRedactionService.redactResume(inputBytes, redactCategories);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+                pdfBytes = redactFuture.get(REDACTION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                log.error("Resume PII redaction timed out after {} seconds for mode RESUME", REDACTION_TIMEOUT_SECONDS);
+                throw new SessionValidationException(
+                        "Resume PII redaction timed out after " + REDACTION_TIMEOUT_SECONDS + " seconds. Please try with a smaller document or fewer categories.",
+                        422);
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause();
+                if (cause instanceof SessionValidationException sve) {
+                    throw sve;
+                }
+                log.error("Resume PII redaction failed: {}", cause.getMessage(), cause);
+                throw new SessionValidationException("Failed to redact resume: " + cause.getMessage(), 422);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new SessionValidationException("Resume PII redaction was interrupted.", 500);
+            }
         }
 
         String sessionId = generateSessionId();
-        Path storageDir = getStorageDir();
-        Path filePath = storageDir.resolve(sessionId + ".pdf");
-        Files.write(filePath, validPdfBytes);
+        Path filePath = null;
+        try {
+            Path storageDir = getStorageDir();
+            filePath = storageDir.resolve(sessionId + ".pdf");
+            Files.write(filePath, pdfBytes);
+        } catch (Exception e) {
+            log.warn("Disk storage unavailable for session {}: {}. Falling back to in-memory storage.", sessionId, e.getMessage());
+            inMemoryStorage.put(sessionId, pdfBytes);
+        }
 
         Instant createdAt = Instant.now();
         Instant expiresAt = createdAt.plus(properties.getTtlMinutes(), ChronoUnit.MINUTES);
@@ -92,6 +133,7 @@ public class SessionService {
 
         if (session.isExpired()) {
             session.setStatus(SessionStatus.EXPIRED);
+            inMemoryStorage.remove(session.getId());
             return Optional.empty();
         }
 
@@ -99,11 +141,17 @@ public class SessionService {
     }
 
     public byte[] getSessionPdfBytes(PdfSession session) throws IOException {
-        Path filePath = session.getFilePath();
-        if (filePath == null || !Files.exists(filePath) || !Files.isRegularFile(filePath)) {
-            throw new IOException("Session file not found on disk: " + session.getId());
+        byte[] inMemoryBytes = inMemoryStorage.get(session.getId());
+        if (inMemoryBytes != null) {
+            return inMemoryBytes;
         }
-        return Files.readAllBytes(filePath);
+
+        Path filePath = session.getFilePath();
+        if (filePath != null && Files.exists(filePath) && Files.isRegularFile(filePath)) {
+            return Files.readAllBytes(filePath);
+        }
+
+        throw new IOException("Session file not found on disk or in-memory: " + session.getId());
     }
 
     public String buildEditUrl(String sessionId) {
@@ -120,5 +168,9 @@ public class SessionService {
 
     public ConcurrentHashMap<String, PdfSession> getSessionMap() {
         return sessionMap;
+    }
+
+    public ConcurrentHashMap<String, byte[]> getInMemoryStorage() {
+        return inMemoryStorage;
     }
 }

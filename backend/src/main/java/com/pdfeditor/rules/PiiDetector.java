@@ -174,10 +174,11 @@ public class PiiDetector {
             int end = emailMatcher.end();
 
             // Check if preceded by a contact label like "Email: " or "E-mail: " or icon glyphs
-            String before = text.substring(0, start);
+            int lookbackStart = Math.max(0, start - 50);
+            String before = text.substring(lookbackStart, start);
             Matcher labelMatcher = EMAIL_LABEL_REGEX.matcher(before);
             if (labelMatcher.find()) {
-                start = before.length() - labelMatcher.group().length();
+                start = start - labelMatcher.group().length();
             }
 
             spans.add(new PiiSpan(start, end, text.substring(start, end), "email"));
@@ -193,10 +194,11 @@ public class PiiDetector {
                 int end = phoneMatcher.end();
 
                 // Check if preceded by a contact label like "Phone: ", "Tel: ", etc. or icon glyphs
-                String before = text.substring(0, start);
+                int lookbackStart = Math.max(0, start - 50);
+                String before = text.substring(lookbackStart, start);
                 Matcher labelMatcher = PHONE_LABEL_REGEX.matcher(before);
                 if (labelMatcher.find()) {
-                    start = before.length() - labelMatcher.group().length();
+                    start = start - labelMatcher.group().length();
                 }
 
                 spans.add(new PiiSpan(start, end, text.substring(start, end), "phone"));
