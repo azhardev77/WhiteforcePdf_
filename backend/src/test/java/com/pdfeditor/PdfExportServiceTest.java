@@ -49,6 +49,9 @@ class PdfExportServiceTest {
     @Autowired
     private PdfExportService pdfExportService;
 
+    @Autowired
+    private PlaywrightManager playwrightManager;
+
     private DocumentModel sampleDocument;
 
     @BeforeAll
@@ -139,5 +142,32 @@ class PdfExportServiceTest {
             .andExpect(status().isOk())
             .andExpect(content().contentType("text/html;charset=UTF-8"))
             .andExpect(content().string(org.hamcrest.Matchers.containsString("Executive Summary")));
+    }
+
+    @Test
+    @DisplayName("Test Playwright concurrent execution")
+    void testPlaywrightConcurrent() throws Exception {
+        java.util.concurrent.CompletableFuture<byte[]> f1 = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            return pdfExportService.exportToPdf(sampleDocument);
+        });
+        java.util.concurrent.CompletableFuture<byte[]> f2 = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            return pdfExportService.exportToPdf(sampleDocument);
+        });
+        byte[] b1 = f1.get(20, java.util.concurrent.TimeUnit.SECONDS);
+        byte[] b2 = f2.get(20, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(b1).isNotNull();
+        assertThat(b2).isNotNull();
+        assertThat(playwrightManager.getAvailablePermits()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("Verify Playwright semaphore permits invariant before and after render")
+    void testPlaywrightSemaphorePermitsInvariant() {
+        assertThat(playwrightManager.getAvailablePermits()).isEqualTo(2);
+
+        byte[] pdfBytes = pdfExportService.exportToPdf(sampleDocument);
+        assertThat(pdfBytes).isNotNull();
+
+        assertThat(playwrightManager.getAvailablePermits()).isEqualTo(2);
     }
 }

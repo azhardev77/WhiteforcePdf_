@@ -84,3 +84,33 @@
 - `cd frontend; node test-converters.js; node test-tiptap-update.js` -> All tests passed cleanly.
 - `cd frontend; npm run build` -> BUILD SUCCESS (vite v5.4.21, 424 modules transformed, built in 8.21s).
 - `cd backend; mvn test-compile` -> BUILD SUCCESS (Total time: 16.313 s).
+
+## 2026-10-31 - Task 4 Execution Summary
+
+### Completed:
+- Enhanced `backend/src/main/java/com/pdfeditor/export/PlaywrightManager.java`:
+  1. Concurrency Limiting:
+     - Added `private final Semaphore renderSemaphore = new Semaphore(MAX_CONCURRENT_INSTANCES, true)` capping concurrent renders to a strict maximum of 2.
+     - Implemented an instance pool (`BlockingQueue<BrowserInstance>`) with capacity 2, lazy warm-up, and thread isolation to prevent Playwright `Connection` protocol packet interleaving.
+     - Added graceful capacity rejection throwing `IllegalStateException("PDF rendering capacity exceeded: maximum 2 concurrent rendering operations in use. Please retry shortly.")` when permits cannot be acquired within 15 seconds.
+  2. Bounded Execution Timeouts:
+     - Configured `CompletableFuture.supplyAsync(..., renderExecutor)` with `future.get(RENDER_TIMEOUT_SECONDS, TimeUnit.SECONDS)`.
+     - Set explicit Playwright page timeouts: `page.setDefaultTimeout(15000)` and `page.setContent(..., setTimeout(15000))`.
+     - Throws informative `IllegalStateException("PDF rendering exceeded execution timeout of 15 seconds.")` on timeout.
+  3. Deterministic Lifecycle & Cleanup:
+     - Enforced `finally` blocks to close `Page` and `BrowserContext` deterministically on completion, timeout, or failure.
+     - Validated `instance.isHealthy()` before returning instances to the pool; automatically recycles and launches replacement instances if a browser process disconnects.
+     - Implemented `@PreDestroy` / `AutoCloseable.close()` to cleanly shut down worker executors, browser instances, and Playwright driver processes.
+  4. Backward Compatibility:
+     - Maintained existing `exportHtmlToPdf(html, widthPt, heightPt)` and `exportHtmlToPdf(html, options)` signatures.
+     - Preserved `getBrowser()` and `getPlaywright()` accessors.
+- Expanded `backend/src/test/java/com/pdfeditor/PdfExportServiceTest.java`:
+  1. `testPlaywrightConcurrent`: Validated parallel rendering across 2 asynchronous CompletableFutures.
+  2. `testPlaywrightSemaphorePermitsInvariant`: Validated permit invariants (exactly 2 available permits before and after rendering).
+- Marked Task 4 as complete `[x]` in `PRD.md`.
+
+### Verification Results:
+- `cd backend; mvn test-compile` -> BUILD SUCCESS (Total time: 22.418 s).
+- `cd backend; mvn test -Dtest=PdfExportServiceTest` -> 6/6 tests passed (Time elapsed: 18.94 s).
+- `cd backend; mvn test` -> Full backend test suite: 111 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS, Total time: 59.019 s).
+
