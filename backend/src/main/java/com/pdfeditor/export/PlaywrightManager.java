@@ -167,6 +167,7 @@ public class PlaywrightManager implements AutoCloseable {
             }
             instance.close();
             allInstances.remove(instance);
+            totalCreated.decrementAndGet();
         }
 
         synchronized (this) {
@@ -182,9 +183,14 @@ public class PlaywrightManager implements AutoCloseable {
         if (waited != null && !waited.isHealthy()) {
             waited.close();
             allInstances.remove(waited);
-            BrowserInstance fresh = new BrowserInstance();
-            allInstances.add(fresh);
-            return fresh;
+            try {
+                BrowserInstance fresh = new BrowserInstance();
+                allInstances.add(fresh);
+                return fresh;
+            } catch (Exception e) {
+                totalCreated.decrementAndGet();
+                throw e;
+            }
         }
         return waited;
     }
@@ -201,6 +207,7 @@ public class PlaywrightManager implements AutoCloseable {
                     allInstances.add(fresh);
                     instancePool.offer(fresh);
                 } catch (Exception ignored) {
+                    totalCreated.decrementAndGet();
                 }
             }
         }
@@ -226,16 +233,20 @@ public class PlaywrightManager implements AutoCloseable {
 
     public synchronized Browser getBrowser() {
         ensureInitialized();
-        if (!allInstances.isEmpty()) {
-            return allInstances.get(0).browser;
+        for (BrowserInstance inst : allInstances) {
+            if (inst != null && inst.isHealthy()) {
+                return inst.browser;
+            }
         }
         return null;
     }
 
     public synchronized Playwright getPlaywright() {
         ensureInitialized();
-        if (!allInstances.isEmpty()) {
-            return allInstances.get(0).playwright;
+        for (BrowserInstance inst : allInstances) {
+            if (inst != null && inst.isHealthy()) {
+                return inst.playwright;
+            }
         }
         return null;
     }
