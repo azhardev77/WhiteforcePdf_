@@ -114,3 +114,34 @@
 - `cd backend; mvn test -Dtest=PdfExportServiceTest` -> 6/6 tests passed (Time elapsed: 18.94 s).
 - `cd backend; mvn test` -> Full backend test suite: 111 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS, Total time: 59.019 s).
 
+## 2026-10-31 - Task 5 Execution Summary
+
+### Completed:
+- Implemented `backend/src/main/java/com/pdfeditor/font/FontMatcher.java`:
+  1. Configured as a Spring `@Service` bean.
+  2. Resolves embedded font family names and typography styles (bold, italic) to bundled open-source TrueType fonts:
+     - Default & Sans-Serif (Helvetica, Arial, Roboto, Open Sans) -> `LiberationSans-(Regular|Bold|Italic|BoldItalic).ttf`
+     - Serif (Times, Roman, Georgia, Garamond) -> `LiberationSerif-(Regular|Bold|Italic|BoldItalic).ttf`
+     - Monospace (Courier, Monospace, Consolas, Code) -> `LiberationMono-(Regular|Bold|Italic|BoldItalic).ttf`
+     - Devanagari & Hindi fallback -> `NotoSans-Regular.ttf`
+  3. Provided `matchFont`, `resolveFontFilename`, `getDefaultFontFilename`, and `getFallbackFontFilename` accessors.
+- Linked `backend/src/main/java/com/pdfeditor/export/PdfRedactionService.java` to `FontMatcher`:
+  1. Added `FontMatcher` injection via constructor (`@Autowired public PdfRedactionService(FontMatcher fontMatcher)`) with fallback default constructor (`this(new FontMatcher())`) for standalone non-Spring unit test compatibility.
+  2. Delegated `resolveFontFilename` to `fontMatcher.resolveFontFilename(fontFamily, bold, italic)`.
+  3. Delegated `getFallbackFont` to `fontMatcher.getFallbackFontFilename()`.
+- Updated `backend/src/test/java/com/pdfeditor/PdfExportServiceTest.java`:
+  1. Added `FontMatcher.class` to `@Import` configuration.
+- Added comprehensive unit test suite `backend/src/test/java/com/pdfeditor/FontMatcherTest.java`:
+  1. Tested sans-serif, serif, monospace, Devanagari/Hindi fallback mappings across all style permutations (bold, italic, bold-italic, regular).
+  2. Tested null, empty string, and case-insensitive font family resolution.
+- Cleaned up 43 dead 0-byte skeleton stub files across `auth/`, `common/`, `config/`, `document/`, `extraction/`, `font/`, `job/`, `security/`, `storage/`, `user/`, and `web/`:
+  - Removed empty files that were not referenced anywhere in the codebase.
+- Marked Task 5 as complete `[x]` in `PRD.md`.
+
+### Verification Results:
+- `cd backend; mvn test-compile` -> BUILD SUCCESS (62 source files compiled, Total time: 15.146 s).
+- `cd backend; mvn test -Dtest=FontMatcherTest` -> 5/5 tests passed (Time elapsed: 0.364 s).
+- `cd backend; mvn test "-Dtest=PdfRedactionServiceTest,PdfExportServiceTest"` -> 18/18 tests passed (Time elapsed: 24.13 s).
+- `cd backend; mvn test` -> Full backend test suite: 116 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS, Total time: 45.829 s).
+
+

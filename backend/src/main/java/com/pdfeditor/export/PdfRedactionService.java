@@ -21,7 +21,9 @@ import org.apache.pdfbox.pdfparser.PDFStreamParser;
 import org.apache.pdfbox.pdfwriter.ContentStreamWriter;
 import org.apache.pdfbox.pdmodel.common.PDStream;
 import org.apache.pdfbox.util.Matrix;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import com.pdfeditor.font.FontMatcher;
 
 import java.awt.Color;
 import java.awt.image.BufferedImage;
@@ -48,6 +50,16 @@ public class PdfRedactionService {
 
     private final Map<String, byte[]> fontBytesMap = new ConcurrentHashMap<>();
     private final ThreadLocal<Integer> lastReplacedCharCount = ThreadLocal.withInitial(() -> 0);
+    private final FontMatcher fontMatcher;
+
+    @Autowired
+    public PdfRedactionService(FontMatcher fontMatcher) {
+        this.fontMatcher = fontMatcher != null ? fontMatcher : new FontMatcher();
+    }
+
+    public PdfRedactionService() {
+        this(new FontMatcher());
+    }
 
     public int getLastReplacedCharCount() {
         return lastReplacedCharCount.get();
@@ -346,16 +358,8 @@ public class PdfRedactionService {
         return font;
     }
 
-    private String resolveFontFilename(String fontFamily, boolean bold, boolean italic) {
-        String fn = fontFamily != null ? fontFamily.toLowerCase() : "";
-        String style = (bold && italic) ? "-BoldItalic.ttf" : bold ? "-Bold.ttf" : italic ? "-Italic.ttf" : "-Regular.ttf";
-        if (fn.contains("times") || fn.contains("serif") || fn.contains("roman")) {
-            return "LiberationSerif" + style;
-        } else if (fn.contains("courier") || fn.contains("mono")) {
-            return "LiberationMono" + style;
-        } else {
-            return "LiberationSans" + style;
-        }
+    String resolveFontFilename(String fontFamily, boolean bold, boolean italic) {
+        return fontMatcher.resolveFontFilename(fontFamily, bold, italic);
     }
 
     private PDType0Font selectFont(PDDocument doc, Map<String, PDType0Font> fontCache,
@@ -365,7 +369,7 @@ public class PdfRedactionService {
     }
 
     private PDType0Font getFallbackFont(PDDocument doc, Map<String, PDType0Font> fontCache) throws IOException {
-        return getOrLoadFont(doc, fontCache, "NotoSans-Regular.ttf");
+        return getOrLoadFont(doc, fontCache, fontMatcher.getFallbackFontFilename());
     }
 
     private static boolean fontHasGlyph(PDType0Font font, int codePoint) {

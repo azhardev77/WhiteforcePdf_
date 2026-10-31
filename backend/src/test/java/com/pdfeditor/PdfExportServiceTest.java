@@ -6,6 +6,7 @@ import com.pdfeditor.export.ExportController;
 import com.pdfeditor.export.PdfExportService;
 import com.pdfeditor.export.PdfRedactionService;
 import com.pdfeditor.export.PlaywrightManager;
+import com.pdfeditor.font.FontMatcher;
 import com.pdfeditor.model.DocumentModel;
 import com.pdfeditor.model.HeadingBlock;
 import com.pdfeditor.model.PageModel;
@@ -39,7 +40,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(controllers = ExportController.class)
-@Import({PdfExportService.class, PdfRedactionService.class, HtmlGenerator.class, CssGenerator.class, PlaywrightManager.class, CorsConfig.class})
+@Import({PdfExportService.class, PdfRedactionService.class, FontMatcher.class, HtmlGenerator.class, CssGenerator.class, PlaywrightManager.class, CorsConfig.class})
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PdfExportServiceTest {
 
