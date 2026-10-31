@@ -60,6 +60,11 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             return true;
         }
 
+        // All /api/v1/** endpoints must be authenticated strictly against expectedApiKey
+        if (path.startsWith("/api/v1/")) {
+            return false;
+        }
+
         // 3. Public system / health endpoints can bypass
         if (path.equals("/api/health") || path.startsWith("/api/public/")) {
             return true;

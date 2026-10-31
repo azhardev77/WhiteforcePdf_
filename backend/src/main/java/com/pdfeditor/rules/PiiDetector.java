@@ -26,8 +26,8 @@ public class PiiDetector {
     private static final Pattern YEAR_RANGE_REGEX = Pattern.compile("^(?:19|20)\\d{2}\\s*[-–—/]\\s*(?:19|20)\\d{2}$");
     private static final Pattern STANDALONE_YEAR_REGEX = Pattern.compile("^(?:19|20)\\d{2}$");
 
-    private static final Pattern EMAIL_LABEL_REGEX = Pattern.compile("(?i)(?:(?:email|e-mail)\\s*[:.-]?\\s*|[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}✉☎✆📞📧📱📍]\\s*)+$");
-    private static final Pattern PHONE_LABEL_REGEX = Pattern.compile("(?i)(?:(?:phone|tel|telephone|mobile|mob|cell|call|contact)\\s*[:.-]?\\s*|[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}✉☎✆📞📧📱📍]\\s*)+$");
+    private static final Pattern EMAIL_LABEL_REGEX = Pattern.compile("(?i)(?:(?:email|e-mail|fa-envelope|fa-envelope-o|envelope)\\s*[:.-]?\\s*|[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}\\u260E\\u2709\\uF095\\uF0E0✉☎✆📞📧📱📍]\\s*)+$");
+    private static final Pattern PHONE_LABEL_REGEX = Pattern.compile("(?i)(?:(?:phone|tel|telephone|mobile|mob|cell|call|contact|fa-phone|fa-mobile)\\s*[:.-]?\\s*|[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}\\u260E\\u2709\\uF095\\uF0E0✉☎✆📞📧📱📍]\\s*)+$");
 
     public static class PiiSpan {
         private int start;
@@ -275,12 +275,19 @@ public class PiiDetector {
         result = result.trim();
 
         // 5. If the entire remaining text is only whitespace or delimiters or icon glyphs, return ""
-        if (result.isEmpty() || result.matches("^[|•,\\-–—·/:\\s\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}✉☎✆📞📧📱📍]+$")) {
+        if (result.isEmpty() || result.matches("^[|•,\\-–—·/:\\s\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}\\u260E\\u2709\\uF095\\uF0E0✉☎✆📞📧📱📍]+$")) {
             return "";
         }
 
         // Also, if stripping leaves only 1-3 non-alphanumeric chars (e.g. font icon glyph)
         if (!result.matches(".*[a-zA-Z0-9].*") && result.length() <= 3) {
+            return "";
+        }
+
+        // Also check if remaining text is just an orphaned font icon token
+        if (result.equalsIgnoreCase("fa-envelope") || result.equalsIgnoreCase("fa-envelope-o") ||
+            result.equalsIgnoreCase("fa-phone") || result.equalsIgnoreCase("fa-mobile") ||
+            result.equalsIgnoreCase("envelope") || result.equalsIgnoreCase("phone")) {
             return "";
         }
 

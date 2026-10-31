@@ -3,7 +3,7 @@ package com.pdfeditor.rules;
 import com.pdfeditor.export.PdfRedactionService;
 import com.pdfeditor.export.TextRedactionEdit;
 import com.pdfeditor.extraction.ExtractionPipeline;
-import com.pdfeditor.model.DocumentModel;
+import com.pdfeditor.model.*;
 import com.pdfeditor.session.SessionValidationException;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.contentstream.operator.Operator;
@@ -126,18 +126,70 @@ public class ResumeRedactionService {
             return originalPdfBytes;
         }
 
-        // Step 4: Convert matches to TextRedactionEdit
+        // Step 4: Convert matches to TextRedactionEdit with expanded bounding box for email/phone contact icons
+        final float ICON_EXPANSION_PT = 25.0f;
         List<TextRedactionEdit> edits = new ArrayList<>();
         for (Match match : matches) {
+            String type = match.getType() != null ? match.getType().trim().toLowerCase() : "";
+            boolean isContact = "email".equals(type) || "phone".equals(type);
+
+            double[] bbox = match.getBbox();
+            double[] expandedBbox = bbox != null ? bbox.clone() : new double[4];
+            List<double[]> expandedLineBboxes = new ArrayList<>();
+
+            if (isContact && expandedBbox.length >= 4) {
+                // Find if there is preceding text on this line so we don't expand into legitimate user text
+                double origX = expandedBbox[0];
+                double origY = expandedBbox[1];
+                double origH = expandedBbox[3];
+                double maxPrecedingRight = calculateMaxPrecedingTextRight(docModel, match.getPageNumber(), origX, origY, origH);
+                double minAllowedX = maxPrecedingRight > 0 ? Math.max(maxPrecedingRight + 0.5, 0.0) : 0.0;
+                double newX = Math.max(minAllowedX, origX - ICON_EXPANSION_PT);
+                double shift = origX - newX;
+                expandedBbox[0] = newX;
+                expandedBbox[2] = expandedBbox[2] + shift;
+
+                if (match.getLineBboxes() != null && !match.getLineBboxes().isEmpty()) {
+                    for (double[] lbox : match.getLineBboxes()) {
+                        if (lbox != null && lbox.length >= 4) {
+                            double origLx = lbox[0];
+                            double origLy = lbox[1];
+                            double origLh = lbox[3];
+                            double maxPrecedingL = calculateMaxPrecedingTextRight(docModel, match.getPageNumber(), origLx, origLy, origLh);
+                            double minAllowedLx = maxPrecedingL > 0 ? Math.max(maxPrecedingL + 0.5, 0.0) : 0.0;
+                            double newLx = Math.max(minAllowedLx, origLx - ICON_EXPANSION_PT);
+                            double shiftL = origLx - newLx;
+                            expandedLineBboxes.add(new double[]{newLx, lbox[1], lbox[2] + shiftL, lbox[3]});
+                        }
+                    }
+                } else {
+                    expandedLineBboxes.add(expandedBbox);
+                }
+
+                // Set expanded bboxes on match for vector stream scrubbing and whiteout overlay
+                match.setExpandedBbox(expandedBbox);
+                match.setExpandedLineBboxes(expandedLineBboxes);
+            } else {
+                if (match.getLineBboxes() != null && !match.getLineBboxes().isEmpty()) {
+                    for (double[] lbox : match.getLineBboxes()) {
+                        expandedLineBboxes.add(lbox != null ? lbox.clone() : new double[4]);
+                    }
+                } else {
+                    expandedLineBboxes.add(expandedBbox);
+                }
+                match.setExpandedBbox(expandedBbox);
+                match.setExpandedLineBboxes(expandedLineBboxes);
+            }
+
             TextRedactionEdit edit = new TextRedactionEdit(
                     match.getPageNumber(),
-                    match.getBbox(),
+                    expandedBbox,
                     match.getMatchedText(),
                     "",
                     null,
                     "#FFFFFF"
             );
-            edit.setWhiteoutBoxes(match.getLineBboxes());
+            edit.setWhiteoutBoxes(expandedLineBboxes);
             edits.add(edit);
         }
 
@@ -417,6 +469,38 @@ public class ResumeRedactionService {
                         ctmStack.push(ctm.clone());
                     } else if ("Q".equals(opName)) {
                         ctm = ctmStack.isEmpty() ? new Matrix() : ctmStack.pop();
+                    } else if ("re".equals(opName)) {
+                        if (currentOperands.size() >= 4) {
+                            float rx = getFloatOperand(currentOperands.get(0));
+                            float ry = getFloatOperand(currentOperands.get(1));
+                            float rw = getFloatOperand(currentOperands.get(2));
+                            float rh = getFloatOperand(currentOperands.get(3));
+                            java.awt.geom.Point2D.Float pt = ctm.transformPoint(rx, ry);
+                            if (isPointInsideMatches(pt.x, pt.y, rw, rh, matches, pageH, originX, originY)) {
+                                streamModified = true;
+                                currentOperands.clear();
+                                continue;
+                            }
+                        }
+                    } else if ("m".equals(opName) || "l".equals(opName)) {
+                        if (currentOperands.size() >= 2) {
+                            float px = getFloatOperand(currentOperands.get(0));
+                            float py = getFloatOperand(currentOperands.get(1));
+                            java.awt.geom.Point2D.Float pt = ctm.transformPoint(px, py);
+                            if (isPointInsideMatches(pt.x, pt.y, 1f, 1f, matches, pageH, originX, originY)) {
+                                streamModified = true;
+                                currentOperands.clear();
+                                continue;
+                            }
+                        }
+                    } else if ("Do".equals(opName)) {
+                        float tx = ctm.getTranslateX();
+                        float ty = ctm.getTranslateY();
+                        if (isPointInsideMatches(tx, ty, 10f, 10f, matches, pageH, originX, originY)) {
+                            streamModified = true;
+                            currentOperands.clear();
+                            continue;
+                        }
                     } else if ("BT".equals(opName)) {
                         textMatrix = new Matrix();
                         textLineMatrix = new Matrix();
@@ -711,6 +795,81 @@ public class ResumeRedactionService {
         return Math.max(curX, pdfMinX) < Math.min(rightX, pdfMaxX);
     }
 
+    private static final String[] CONTACT_ICON_TOKENS = {
+            "\u260E", "\u2709", "\uF095", "\uF0E0", "fa-phone", "fa-envelope", "fa-envelope-o", "fa-mobile", "✉", "☎", "✆", "📞", "📧", "📱"
+    };
+
+    private double calculateMaxPrecedingTextRight(DocumentModel docModel, int pageNumber,
+                                                  double targetX, double targetY, double targetH) {
+        if (docModel == null || docModel.getPages() == null) return 0.0;
+        double maxRight = 0.0;
+        double targetTop = targetY;
+        double targetBottom = targetY + targetH;
+
+        for (PageModel page : docModel.getPages()) {
+            if (page.getPageNumber() != pageNumber) continue;
+            List<Block> blocks = page.getBlocks();
+            if (blocks == null) continue;
+
+            for (Block b : blocks) {
+                List<TextRun> runs = null;
+                if (b instanceof ParagraphBlock pb) {
+                    runs = pb.getRuns();
+                } else if (b instanceof HeadingBlock hb) {
+                    runs = hb.getRuns();
+                }
+
+                if (runs != null) {
+                    for (TextRun run : runs) {
+                        String text = run.getText();
+                        if (text == null || text.isBlank()) continue;
+                        double[] box = run.getBbox();
+                        if (box == null || box.length < 4) continue;
+
+                        double rx = box[0];
+                        double ry = box[1];
+                        double rw = box[2];
+                        double rh = box[3];
+                        double rTop = ry;
+                        double rBottom = ry + rh;
+
+                        // Check vertical overlap with target line
+                        double yOverlap = Math.max(0, Math.min(targetBottom, rBottom) - Math.max(targetTop, rTop));
+                        if (yOverlap > 2.0) {
+                            if (rx + rw <= targetX + 1.0) {
+                                maxRight = Math.max(maxRight, rx + rw);
+                            } else if (rx < targetX) {
+                                // Run starts before targetX and continues past it
+                                maxRight = Math.max(maxRight, targetX);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return maxRight;
+    }
+
+    private boolean isPointInsideMatches(float curX, float curY, float width, float height,
+                                         List<Match> matches, float pageH, float originX, float originY) {
+        if (matches == null || matches.isEmpty()) return false;
+        float tol = 4.0f;
+        float rightX = curX + width;
+        for (Match m : matches) {
+            List<double[]> boxes = m.getExpandedLineBboxes();
+            if (boxes != null && !boxes.isEmpty()) {
+                for (double[] box : boxes) {
+                    if (boxOverlaps(curX, rightX, curY, box, pageH, originX, originY, tol)) return true;
+                }
+            }
+            double[] bbox = m.getExpandedBbox();
+            if (bbox != null && bbox.length >= 4) {
+                if (boxOverlaps(curX, rightX, curY, bbox, pageH, originX, originY, tol)) return true;
+            }
+        }
+        return false;
+    }
+
     private float getFloatOperand(Object obj) {
         if (obj instanceof COSNumber n) {
             return n.floatValue();
@@ -740,6 +899,14 @@ public class ResumeRedactionService {
                                     content = content.replace(clean, "");
                                     modified = true;
                                 }
+                            }
+                        }
+
+                        // Also scrub contact icon tokens and font glyphs
+                        for (String iconToken : CONTACT_ICON_TOKENS) {
+                            if (content.contains(iconToken)) {
+                                content = content.replace(iconToken, "");
+                                modified = true;
                             }
                         }
 

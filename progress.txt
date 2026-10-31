@@ -207,3 +207,46 @@
 - `cd backend; mvn test` -> Full backend test suite: 119 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS, Total time: 46.430 s).
 - `cd frontend; node test-converters.js; node test-tiptap-update.js` -> ALL TESTS PASSED.
 - `cd frontend; npm run build` -> BUILD SUCCESS (vite v5.4.21, 424 modules transformed, built in 13.41s).
+
+
+## 2026-10-31 - Automated Resume B2B Pipeline & Contact Icon Stripping
+
+### Completed:
+- Contact Icon Scrubbing in `ResumeRedactionService.java` & `PiiDetector.java`:
+  1. Updated `PiiDetector.java`:
+     - Added detection of Unicode contact icon glyphs (`\u260E`, `\u2709`, `\uF095`, `\uF0E0`), FontAwesome text tokens (`fa-envelope`, `fa-envelope-o`, `fa-phone`, `fa-mobile`, `envelope`, `phone`), and emoji/dingbat icons (`✉☎✆📞📧📱📍`).
+     - Enhanced `redactPIIFromText` to scrub residual icon font tokens and orphaned glyphs.
+  2. Bounding Box Left Expansion & Vector Stream Scrubbing in `ResumeRedactionService.java`:
+     - Expanded redaction bounding box horizontally to the left by 25.0pt (clamped to page left margin) to cover vector-drawn icons and inline graphics immediately preceding contact text.
+     - Added `calculateMaxPrecedingTextRight(docModel, pageNumber, targetX, targetY, targetH)` to detect preceding text on the same line and clamp left expansion, completely preventing unintentional redaction of preceding non-PII text (e.g. "Jabalpur, India | ").
+     - Added `expandedBbox` and `expandedLineBboxes` on `Match.java`: vector operator scrubbing (`re`, `m`, `l`, `Do`) and `TextRedactionEdit` whiteout boxes cover the expanded area, while text character scrubbing in `scrubCosArray` precisely targets matched text.
+     - Enhanced `deepScrubRawStreams` with `CONTACT_ICON_TOKENS` scanning to purge residual icon font tokens and glyphs from content streams.
+- Security & API Key Authentication:
+  1. Configured `pdfeditor.security.api-key: ${API_KEY:wf_live_secret_key_2026}` in `backend/src/main/resources/application.yml`.
+  2. Updated `SecurityConfig.java`:
+     - Registered `/api/v1/*` in `apiKeyFilterRegistration`.
+     - Supports property resolution via `@Value("${app.security.api-key:${pdfeditor.security.api-key:${API_KEY:}}}")` to maintain 100% backward compatibility with existing tests.
+  3. Updated `ApiKeyAuthFilter.java`:
+     - Enforced strict `X-API-KEY` validation against `expectedApiKey` for all `/api/v1/**` requests.
+- B2B Pipeline Endpoint in `ProcessController.java`:
+  1. Created `ResumeProcessResponse.java` DTO record (`ExtractedDetails extractedDetails`, `String redactedPdfBase64`, `int pageCount`).
+  2. Implemented `POST /api/v1/resume/process` accepting `multipart/form-data`:
+     - Validates file through `SessionValidator` and enforces IP rate limiting.
+     - Extracts clean email and phone metadata (stripping labels/glyphs) into `extractedDetails: { emails: [...], phones: [...] }`.
+     - Executes contact icon and PII redaction via `ResumeRedactionService` according to `redactEmail` and `redactPhone` parameters (defaulting to true).
+     - Strictly validates Page Count Invariant (`inputPages == outputPages`).
+     - Returns HTTP 200 with JSON payload containing `extractedDetails`, `redactedPdfBase64`, `pageCount`, and response headers `X-Page-Count`, `X-Emails-Count`, `X-Phones-Count`.
+- Unit Tests:
+  1. Created `backend/src/test/java/com/pdfeditor/process/ResumeB2BPipelineTest.java` (5 unit tests):
+     - `testAuthenticationEnforced`: rejects requests missing `X-API-KEY` or with invalid key with HTTP 401 Unauthorized.
+     - `testResumeProcessWithFixture`: processes resume fixture, verifies extracted email and phone metadata, verifies page count invariant, and asserts emails/phones are completely scrubbed from the returned PDF.
+     - `testSyntheticResumeWithIconsAndVectorDrawings`: validates stripping of vector-drawn icons and email/phone while preserving non-PII text ("Alice Smith", "Spring Boot", etc.).
+     - `testSelectiveRedaction`: verifies `redactEmail=false, redactPhone=true` extracts both email and phone, retains email in output PDF, and redacts phone.
+     - `testMultiPagePageCountInvariant`: verifies 3-page document page count strictly preserved.
+
+### Verification Results:
+- `cd backend; mvn test-compile` -> BUILD SUCCESS
+- `cd backend; mvn test -Dtest=ResumeB2BPipelineTest` -> 5 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS, Total time: 31.008 s)
+- `cd backend; mvn test "-Dtest=ProcessControllerTest,ResumeRedactionTest,ResumeB2BPipelineTest"` -> 18 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS)
+- `cd backend; mvn test` -> Full backend test suite: 124 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS, Total time: 58.610 s)
+- `cd frontend; npm run build` -> BUILD SUCCESS (vite v5.4.21, 424 modules transformed, built in 15.55s)

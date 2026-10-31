@@ -11,6 +11,8 @@ public class Match {
     private String matchedText;
     private double[] bbox; // [x, y, w, h] in top-left PDF points
     private List<double[]> lineBboxes; // One bbox per run/line spanned
+    private double[] expandedBbox;
+    private List<double[]> expandedLineBboxes;
 
     public Match() {
         this.bbox = new double[4];
@@ -63,6 +65,22 @@ public class Match {
 
     public void setLineBboxes(List<double[]> lineBboxes) {
         this.lineBboxes = lineBboxes != null ? lineBboxes : new ArrayList<>();
+    }
+
+    public double[] getExpandedBbox() {
+        return expandedBbox != null ? expandedBbox : bbox;
+    }
+
+    public void setExpandedBbox(double[] expandedBbox) {
+        this.expandedBbox = expandedBbox;
+    }
+
+    public List<double[]> getExpandedLineBboxes() {
+        return expandedLineBboxes != null ? expandedLineBboxes : lineBboxes;
+    }
+
+    public void setExpandedLineBboxes(List<double[]> expandedLineBboxes) {
+        this.expandedLineBboxes = expandedLineBboxes;
     }
 
     @Override

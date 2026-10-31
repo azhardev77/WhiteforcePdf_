@@ -11,10 +11,14 @@ spring:
       max-file-size: 50MB
       max-request-size: 50MB
 
+pdfeditor:
+  security:
+    api-key: ${API_KEY:wf_live_secret_key_2026}
+
 app:
   public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:5173}
   security:
-    api-key: ${API_KEY:}
+    api-key: ${pdfeditor.security.api-key:${API_KEY:wf_live_secret_key_2026}}
     ui-api-key: ${UI_API_KEY:}
     header-name: X-API-KEY
   sessions:

@@ -15,7 +15,7 @@ public class SecurityConfig {
 
     private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
 
-    @Value("${app.security.api-key:}")
+    @Value("${app.security.api-key:${pdfeditor.security.api-key:${API_KEY:}}}")
     private String apiKey;
 
     @Value("${app.security.ui-api-key:}")
@@ -45,7 +45,7 @@ public class SecurityConfig {
     @Bean
     public FilterRegistrationBean<ApiKeyAuthFilter> apiKeyFilterRegistration(ApiKeyAuthFilter filter) {
         FilterRegistrationBean<ApiKeyAuthFilter> registration = new FilterRegistrationBean<>(filter);
-        registration.addUrlPatterns("/api/*");
+        registration.addUrlPatterns("/api/*", "/api/v1/*");
         registration.setName("apiKeyAuthFilter");
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 10);
         return registration;
