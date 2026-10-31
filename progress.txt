@@ -177,3 +177,33 @@
 - `cd backend; mvn test "-Dtest=*Session*"` -> 20/20 session tests passed (`SessionControllerTest`, `SessionPhase3bVerificationTest`, `SessionResumeModeTest`, `SessionServiceTest`).
 - `cd backend; mvn test` -> Full backend test suite: 118 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS, Total time: 01:31 min).
 - `cd frontend; npm run build` -> BUILD SUCCESS (vite v5.4.21, 424 modules transformed, built in 10.44s).
+
+## 2026-10-31 - Session Document Loading in EditorView Fix
+
+### Completed:
+- Investigated and resolved session document loading failure in `frontend/src/views/EditorView.vue` for route `/edit/:sessionId`:
+  1. Traced session loading flow:
+     - `EditorView.vue` mounted with `route.params.sessionId` and previously caught errors silently or displayed generic fallbacks without proper route watch handling.
+     - `documentStore.loadFromSession` fetched `/app/sessions/{id}/pdf` via `fetchAppSessionPdf`, but `documentStore` lacked a dedicated, reusable `loadPdf` action accepting raw binary bytes.
+  2. Enhanced `backend/src/main/java/com/pdfeditor/session/SessionService.java` & `SessionController.java`:
+     - In `SessionService.createSession`: always populates `inMemoryStorage.put(sessionId, pdfBytes)` upon session creation, ensuring that `getSessionPdfBytes` immediately streams bytes from in-memory cache with zero disk I/O latency.
+     - Confirmed `/app/**` endpoints are excluded from `ApiKeyAuthFilter` via `registration.addUrlPatterns("/api/*")` and filter path checks, allowing unauthenticated browser sessions to stream seamlessly.
+     - Added explicit content type negotiation support `produces = {MediaType.APPLICATION_PDF_VALUE, MediaType.APPLICATION_JSON_VALUE}` to `GET /app/sessions/{id}/pdf` in `SessionController.java`.
+     - Added test `testInMemoryStoragePopulatedOnCreation` in `SessionServiceTest.java`.
+  3. Added `documentStore.loadPdf(pdfData, fileName)` in `frontend/src/stores/document.js`:
+     - Parses `ArrayBuffer`, `Uint8Array`, `Blob`, or `File`, clears active draft cache, calculates hash, extracts spatial layout model via client-side pdfjs-dist (with backend fallback), and commits `originalPdfData`, `originalFile`, `fileKey`, and `documentModel`.
+     - Guarantees `documentStore.hasDocument` evaluates to `true` upon loading.
+     - Refactored `loadFromSession(sessionId)` to delegate directly to `this.loadPdf(arrayBuffer, this.fileName)`.
+  4. Resolved Generic Error Banner & Added Route Watcher in `frontend/src/views/EditorView.vue`:
+     - Implemented `loadSessionDocument(sessionId)`: fetches PDF bytes via `fetchAppSessionPdf` and passes them to `documentStore.loadPdf(arrayBuffer, ...)`.
+     - Displays specific error status/message from API (`documentStore.errorMessage = status ? \`[HTTP \${status}] \${message}\` : message`), replacing the generic "Backend server is unreachable" fallback.
+     - Added Vue router watcher `watch(() => route?.params?.sessionId)` to reload document when route parameters change.
+     - In `frontend/src/api/http.js`: decoded binary `ArrayBuffer` error payloads with `TextDecoder` and `JSON.parse` so Spring Boot JSON error objects are parsed correctly.
+     - In `frontend/src/api/sessions.js`: added explicit `Accept: application/pdf, application/json, */*` headers to avoid HTTP 406 content negotiation mismatches.
+
+### Verification Results:
+- `cd backend; mvn test-compile` -> BUILD SUCCESS (Total time: 3.695 s).
+- `cd backend; mvn test "-Dtest=*Session*"` -> 21/21 session tests passed (`SessionControllerTest`, `SessionPhase3bVerificationTest`, `SessionResumeModeTest`, `SessionServiceTest`).
+- `cd backend; mvn test` -> Full backend test suite: 119 tests run, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS, Total time: 46.430 s).
+- `cd frontend; node test-converters.js; node test-tiptap-update.js` -> ALL TESTS PASSED.
+- `cd frontend; npm run build` -> BUILD SUCCESS (vite v5.4.21, 424 modules transformed, built in 13.41s).
