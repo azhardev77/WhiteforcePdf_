@@ -442,6 +442,78 @@ export const useDocumentStore = defineStore('document', {
     },
 
     /**
+     * Loads raw PDF bytes (ArrayBuffer, Uint8Array, or Blob), extracts layout,
+     * and initializes active document state so hasDocument becomes true.
+     *
+     * @param {ArrayBuffer|Uint8Array|Blob} pdfData - Raw PDF bytes
+     * @param {string} [fileName='document.pdf'] - Document filename
+     * @returns {Promise<Object>} Extracted DocumentModel
+     */
+    async loadPdf(pdfData, fileName = 'document.pdf') {
+      if (!pdfData) return null;
+
+      this.purgeDocumentState();
+      this.isExtracting = true;
+      this.fileName = fileName;
+
+      try {
+        await sessionStorageService.clearActiveDocument();
+        await sessionStorageService.clearDraftCache();
+      } catch (cacheErr) {
+        console.warn('[documentStore] clearDraftCache warning:', cacheErr);
+      }
+
+      try {
+        let arrayBuffer;
+        let blob;
+        if (pdfData instanceof ArrayBuffer) {
+          arrayBuffer = pdfData;
+          blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+        } else if (pdfData instanceof Blob) {
+          blob = pdfData;
+          arrayBuffer = await pdfData.arrayBuffer();
+        } else if (ArrayBuffer.isView(pdfData)) {
+          arrayBuffer = pdfData.buffer.slice(pdfData.byteOffset, pdfData.byteOffset + pdfData.byteLength);
+          blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+        } else {
+          throw new Error('Unsupported PDF data format');
+        }
+
+        if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+          throw new Error('PDF content is empty');
+        }
+
+        const fileKey = await sessionStorageService.computeFileHash(arrayBuffer, {
+          fileName,
+          fileSize: arrayBuffer.byteLength
+        });
+
+        let model = null;
+        try {
+          model = await extractPdfClient(arrayBuffer, fileName);
+        } catch (clientErr) {
+          console.warn('[documentStore] Client extraction failed in loadPdf, trying fallback:', clientErr);
+          const file = new File([blob], fileName, { type: 'application/pdf' });
+          model = await extractPdf(file);
+          if (model && !model.name) {
+            model.name = fileName;
+          }
+        }
+
+        this.originalPdfData = arrayBuffer;
+        this.originalFile = blob;
+        this.fileKey = fileKey;
+        this.documentModel = model;
+        return model;
+      } catch (err) {
+        this.errorMessage = err.message || 'Failed to load PDF';
+        throw err;
+      } finally {
+        this.isExtracting = false;
+      }
+    },
+
+    /**
      * Loads a PDF document from an active backend session.
      *
      * @param {string} sessionId - Backend session ID
@@ -482,29 +554,7 @@ export const useDocumentStore = defineStore('document', {
           throw new Error('Session PDF content is empty');
         }
 
-        const fileKey = await sessionStorageService.computeFileHash(arrayBuffer, {
-          sessionId,
-          fileSize: arrayBuffer.byteLength
-        });
-
-        let model = null;
-        try {
-          model = await extractPdfClient(arrayBuffer, this.fileName);
-        } catch (clientErr) {
-          console.warn('[documentStore] Client extraction failed for session, trying fallback:', clientErr);
-          const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
-          const file = new File([blob], this.fileName, { type: 'application/pdf' });
-          model = await extractPdf(file);
-          if (model && !model.name) {
-            model.name = this.fileName;
-          }
-        }
-
-        this.originalPdfData = arrayBuffer;
-        this.originalFile = new Blob([arrayBuffer], { type: 'application/pdf' });
-        this.fileKey = fileKey;
-        this.documentModel = model;
-        return model;
+        return await this.loadPdf(arrayBuffer, this.fileName);
       } catch (err) {
         this.errorMessage = err.message || `Failed to load session: ${sessionId}`;
         throw err;

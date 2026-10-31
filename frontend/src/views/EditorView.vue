@@ -367,7 +367,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDocumentStore } from '@/stores/document';
 import EditorToolbar from '@/components/EditorToolbar.vue';
@@ -375,7 +375,7 @@ import PdfCanvasEditor from '@/components/PdfCanvasEditor.vue';
 import TipTapEditor from '@/components/TipTapEditor.vue';
 import RedactionCategoriesModal from '@/components/RedactionCategoriesModal.vue';
 import sessionStorageService from '@/services/sessionStorageService';
-import { createAppSession } from '@/api/sessions';
+import { createAppSession, fetchAppSessionPdf } from '@/api/sessions';
 import { convertDocumentModelToTipTap } from '@/utils/jsonToTipTap';
 
 const route = useRoute();
@@ -415,18 +415,39 @@ function handleGlobalKeydown(e) {
   }
 }
 
+async function loadSessionDocument(sessionId) {
+  if (!sessionId) return;
+  isHydrating.value = true;
+  documentStore.clearError();
+
+  try {
+    const { arrayBuffer, mode, source } = await fetchAppSessionPdf(sessionId);
+    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+      throw new Error(`Session PDF content is empty for session: ${sessionId}`);
+    }
+
+    if (mode) documentStore.sessionMode = mode;
+    if (source) documentStore.sessionSource = source;
+    documentStore.sessionId = sessionId;
+
+    await documentStore.loadPdf(arrayBuffer, `${sessionId}.pdf`);
+  } catch (err) {
+    console.error('[EditorView] Failed to load session document:', err);
+    const status = err.status || err.response?.status;
+    const serverMessage = err.response?.data?.message || err.response?.data?.error;
+    const message = serverMessage || err.message || 'Failed to load session document.';
+    documentStore.errorMessage = status ? `[HTTP ${status}] ${message}` : message;
+  } finally {
+    isHydrating.value = false;
+  }
+}
+
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown);
 
   const sessionId = route?.params?.sessionId;
   if (sessionId) {
-    try {
-      await documentStore.loadFromSession(sessionId);
-    } catch (err) {
-      console.warn('[Session] Failed to load session from route:', err);
-    } finally {
-      isHydrating.value = false;
-    }
+    await loadSessionDocument(sessionId);
     return;
   }
 
@@ -441,6 +462,15 @@ onMounted(async () => {
     isHydrating.value = false;
   }
 });
+
+watch(
+  () => route?.params?.sessionId,
+  async (newSessionId, oldSessionId) => {
+    if (newSessionId && newSessionId !== oldSessionId && newSessionId !== documentStore.sessionId) {
+      await loadSessionDocument(newSessionId);
+    }
+  }
+);
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown);
@@ -479,13 +509,16 @@ async function handleRedactConfirm(selectedCategories) {
     if (!result?.id) {
       throw new Error('Failed to obtain a session ID from backend.');
     }
-    await documentStore.loadFromSession(result.id);
+    await loadSessionDocument(result.id);
     if (route?.params?.sessionId !== result.id) {
       await router.replace(`/edit/${encodeURIComponent(result.id)}`);
     }
   } catch (err) {
     console.error('Failed to create resume session:', err);
-    documentStore.errorMessage = err.response?.data?.message || err.message || 'Failed to initialize resume session.';
+    const status = err.status || err.response?.status;
+    const serverMessage = err.response?.data?.message || err.response?.data?.error;
+    const message = serverMessage || err.message || 'Failed to initialize resume session.';
+    documentStore.errorMessage = status ? `[HTTP ${status}] ${message}` : message;
   } finally {
     isHydrating.value = false;
   }

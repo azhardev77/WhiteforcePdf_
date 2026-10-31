@@ -93,14 +93,14 @@ public class SessionService {
         }
 
         String sessionId = generateSessionId();
+        inMemoryStorage.put(sessionId, pdfBytes);
         Path filePath = null;
         try {
             Path storageDir = getStorageDir();
             filePath = storageDir.resolve(sessionId + ".pdf");
             Files.write(filePath, pdfBytes);
         } catch (Exception e) {
-            log.warn("Disk storage unavailable for session {}: {}. Falling back to in-memory storage.", sessionId, e.getMessage());
-            inMemoryStorage.put(sessionId, pdfBytes);
+            log.warn("Disk storage unavailable for session {}: {}. Serving from in-memory storage.", sessionId, e.getMessage());
         }
 
         Instant createdAt = Instant.now();

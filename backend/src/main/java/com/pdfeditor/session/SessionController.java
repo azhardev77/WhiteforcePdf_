@@ -134,7 +134,7 @@ public class SessionController {
      * GET /app/sessions/{id}/pdf
      * -> PDF bytes (404 if expired)
      */
-    @GetMapping("/app/sessions/{id}/pdf")
+    @GetMapping(value = "/app/sessions/{id}/pdf", produces = {MediaType.APPLICATION_PDF_VALUE, MediaType.APPLICATION_JSON_VALUE})
     public ResponseEntity<?> getAppSessionPdf(@PathVariable("id") String id) throws IOException {
         Optional<PdfSession> sessionOpt = sessionService.getSession(id);
         if (sessionOpt.isEmpty()) {

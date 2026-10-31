@@ -57,7 +57,10 @@ export async function createAppSession(file, mode = 'EDIT', redactCategories = n
  */
 export async function fetchAppSessionPdf(sessionId) {
   const response = await api.get(`/app/sessions/${encodeURIComponent(sessionId)}/pdf`, {
-    responseType: 'arraybuffer'
+    responseType: 'arraybuffer',
+    headers: {
+      'Accept': 'application/pdf, application/json, */*'
+    }
   });
 
   const headers = response.headers || {};

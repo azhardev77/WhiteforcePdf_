@@ -25,6 +25,27 @@ class SessionServiceTest {
     }
 
     @Test
+    @DisplayName("SessionService always populates in-memory storage on session creation and serves bytes directly")
+    void testInMemoryStoragePopulatedOnCreation() throws IOException {
+        SessionProperties props = new SessionProperties();
+        props.setTtlMinutes(60);
+        props.setMaxSizeBytes(10_000_000);
+
+        SessionValidator validator = new SessionValidator(props);
+        SessionService service = new SessionService(props, validator, null);
+
+        byte[] pdfBytes = createMinimalPdf();
+        MockMultipartFile file = new MockMultipartFile("file", "test.pdf", "application/pdf", pdfBytes);
+
+        PdfSession session = service.createSession(file, Mode.RESUME, Source.UPLOAD, "test-client");
+
+        assertThat(session).isNotNull();
+        assertThat(service.getInMemoryStorage()).containsKey(session.getId());
+        byte[] retrieved = service.getSessionPdfBytes(session);
+        assertThat(retrieved).isEqualTo(pdfBytes);
+    }
+
+    @Test
     @DisplayName("SessionService falls back to in-memory storage when disk storage path is invalid")
     void testInMemoryStorageFallback() throws IOException {
         SessionProperties props = new SessionProperties();
@@ -73,4 +94,3 @@ class SessionServiceTest {
         assertThat(service.getInMemoryStorage()).doesNotContainKey(session.getId());
     }
 }
-

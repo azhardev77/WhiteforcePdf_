@@ -23,7 +23,22 @@ api.interceptors.response.use(
   (error) => {
     let message = 'An unexpected error occurred';
     if (error.response) {
-      const data = error.response.data;
+      let data = error.response.data;
+
+      // When requests use responseType: 'arraybuffer', error payloads arrive as ArrayBuffer
+      if (data instanceof ArrayBuffer || (data && typeof data === 'object' && data.byteLength !== undefined)) {
+        try {
+          const decoded = new TextDecoder('utf-8').decode(data);
+          try {
+            data = JSON.parse(decoded);
+          } catch {
+            data = decoded;
+          }
+        } catch {
+          // keep data as is
+        }
+      }
+
       if (typeof data === 'string' && data.trim()) {
         message = data;
       } else if (data && data.message) {
@@ -31,10 +46,12 @@ api.interceptors.response.use(
       } else if (data && data.error) {
         message = data.error;
       } else {
-        message = `Server responded with status ${error.response.status}: ${error.response.statusText}`;
+        message = `Server responded with status ${error.response.status}: ${error.response.statusText || 'Error'}`;
       }
     } else if (error.request) {
-      message = 'Backend server is unreachable. Please verify that the Spring Boot server is running on http://localhost:8080.';
+      message = error.message && !error.message.includes('Network Error')
+        ? error.message
+        : 'Backend server is unreachable. Please verify that the Spring Boot server is running on http://localhost:8080.';
     } else if (error.message) {
       message = error.message;
     }
