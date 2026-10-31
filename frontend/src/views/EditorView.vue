@@ -40,6 +40,44 @@
         </div>
       </div>
 
+      <!-- Header Center: Mode Switcher Toggle (Visible when document loaded) -->
+      <div v-if="documentStore.hasDocument" class="header-center">
+        <div class="mode-switcher" role="tablist" aria-label="Editor Mode">
+          <button
+            type="button"
+            class="mode-btn"
+            :class="{ 'is-active': currentEditorMode === 'canvas' }"
+            data-testid="mode-toggle-canvas"
+            title="Canvas Edit (In-Place) — 1:1 pixel-perfect coordinate layout"
+            @click="switchEditorMode('canvas')"
+          >
+            <svg class="mode-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <line x1="3" y1="9" x2="21" y2="9" />
+              <line x1="9" y1="21" x2="9" y2="9" />
+            </svg>
+            <span>Canvas Edit (In-Place)</span>
+          </button>
+
+          <button
+            type="button"
+            class="mode-btn"
+            :class="{ 'is-active': currentEditorMode === 'reflow' }"
+            data-testid="mode-toggle-reflow"
+            title="Section Reflow (TipTap) — Rich section and flow text editing"
+            @click="switchEditorMode('reflow')"
+          >
+            <svg class="mode-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="21" y1="10" x2="3" y2="10" />
+              <line x1="21" y1="6" x2="3" y2="6" />
+              <line x1="21" y1="14" x2="3" y2="14" />
+              <line x1="21" y1="18" x2="3" y2="18" />
+            </svg>
+            <span>Section Reflow (TipTap)</span>
+          </button>
+        </div>
+      </div>
+
       <div class="header-right">
         <!-- Hidden File Input for Header "Open File" Button -->
         <input
@@ -243,13 +281,25 @@
         <p class="loading-subtext">Restoring PDF document, canvas layout, and active edits from local storage.</p>
       </div>
 
-      <!-- State 2: 100% Pixel-Perfect PDF.js Canvas with Interactive Overlay -->
-      <PdfCanvasEditor
-        v-else
-        ref="canvasEditorRef"
-        :document-model="documentStore.documentModel"
-        :zoom="documentStore.zoom"
-      />
+      <!-- State 2: Active Document Workspace (Canvas vs Section Reflow) -->
+      <template v-else>
+        <!-- Canvas Edit (In-Place) -->
+        <PdfCanvasEditor
+          v-show="currentEditorMode === 'canvas'"
+          ref="canvasEditorRef"
+          :document-model="documentStore.documentModel"
+          :zoom="documentStore.zoom"
+        />
+
+        <!-- Section Reflow (TipTap) -->
+        <TipTapEditor
+          v-if="hasEverToggledReflow"
+          v-show="currentEditorMode === 'reflow'"
+          ref="tipTapEditorRef"
+          :document-model="documentStore.documentModel"
+          @update="handleTipTapUpdate"
+        />
+      </template>
     </main>
 
     <!-- Global Loading Overlay -->
@@ -322,9 +372,11 @@ import { useRoute, useRouter } from 'vue-router';
 import { useDocumentStore } from '@/stores/document';
 import EditorToolbar from '@/components/EditorToolbar.vue';
 import PdfCanvasEditor from '@/components/PdfCanvasEditor.vue';
+import TipTapEditor from '@/components/TipTapEditor.vue';
 import RedactionCategoriesModal from '@/components/RedactionCategoriesModal.vue';
 import sessionStorageService from '@/services/sessionStorageService';
 import { createAppSession } from '@/api/sessions';
+import { convertDocumentModelToTipTap } from '@/utils/jsonToTipTap';
 
 const route = useRoute();
 const router = useRouter();
@@ -334,6 +386,9 @@ const isDragging = ref(false);
 const isHydrating = ref(true);
 const headerFileInputRef = ref(null);
 const canvasEditorRef = ref(null);
+const tipTapEditorRef = ref(null);
+const currentEditorMode = ref('canvas'); // 'canvas' | 'reflow'
+const hasEverToggledReflow = ref(false);
 const exportToastMessage = ref('');
 let toastTimer = null;
 const isRecentlySaved = ref(false);
@@ -487,6 +542,8 @@ function handleCloseDocument() {
 
 async function executeCloseDocument() {
   showCloseConfirmModal.value = false;
+  currentEditorMode.value = 'canvas';
+  hasEverToggledReflow.value = false;
   const currentKey = documentStore.fileKey;
   if (canvasEditorRef.value?.purgeEditorState) {
     canvasEditorRef.value.purgeEditorState();
@@ -550,6 +607,8 @@ async function handleFileInput(event) {
 
 async function uploadFile(file) {
   try {
+    currentEditorMode.value = 'canvas';
+    hasEverToggledReflow.value = false;
     if (canvasEditorRef.value?.purgeEditorState) {
       canvasEditorRef.value.purgeEditorState();
     }
@@ -562,6 +621,8 @@ async function uploadFile(file) {
 
 async function loadSampleDocument() {
   try {
+    currentEditorMode.value = 'canvas';
+    hasEverToggledReflow.value = false;
     if (canvasEditorRef.value?.purgeEditorState) {
       canvasEditorRef.value.purgeEditorState();
     }
@@ -574,6 +635,8 @@ async function loadSampleDocument() {
 
 async function loadResumeDocument() {
   try {
+    currentEditorMode.value = 'canvas';
+    hasEverToggledReflow.value = false;
     if (canvasEditorRef.value?.purgeEditorState) {
       canvasEditorRef.value.purgeEditorState();
     }
@@ -589,18 +652,79 @@ async function loadResumeDocument() {
   }
 }
 
+function switchEditorMode(mode) {
+  if (currentEditorMode.value === mode) return;
+
+  if (currentEditorMode.value === 'canvas') {
+    // 1. Flush any active inline edit from Canvas before switching
+    if (canvasEditorRef.value?.commitActiveBlock) {
+      canvasEditorRef.value.commitActiveBlock();
+    }
+    if (canvasEditorRef.value?.buildRedactionPayload) {
+      const edits = canvasEditorRef.value.buildRedactionPayload();
+      documentStore.setEdits(edits);
+    }
+    hasEverToggledReflow.value = true;
+    currentEditorMode.value = 'reflow';
+  } else if (currentEditorMode.value === 'reflow') {
+    // 2. Flush any pending edits from TipTap before returning to Canvas
+    if (tipTapEditorRef.value?.editor) {
+      const json = tipTapEditorRef.value.editor.getJSON();
+      documentStore.updateFromTipTap(json);
+    }
+
+    // Synchronize canvasEditorRef state if snapshot is available
+    if (canvasEditorRef.value?.captureCurrentSnapshot && canvasEditorRef.value?.applyHistorySnapshot) {
+      const snapshot = canvasEditorRef.value.captureCurrentSnapshot();
+      if (snapshot?.pageBlocksMap) {
+        for (const [pStr, pBlocks] of Object.entries(snapshot.pageBlocksMap)) {
+          const p = Number(pStr);
+          for (const b of pBlocks) {
+            const patch = documentStore.getPatch ? documentStore.getPatch(p, b.id) : null;
+            if (patch) {
+              b.text = patch.newText;
+              b.isEdited = true;
+              if (snapshot.editedBlocksState) {
+                snapshot.editedBlocksState[b.id] = {
+                  newText: patch.newText,
+                  deltaY: 0,
+                  currentHeight: b.originalHeight || b.height
+                };
+              }
+            }
+          }
+        }
+        canvasEditorRef.value.applyHistorySnapshot(snapshot);
+      }
+    }
+
+    currentEditorMode.value = 'canvas';
+  }
+}
+
+function handleTipTapUpdate(json) {
+  if (documentStore && json) {
+    documentStore.updateFromTipTap(json);
+  }
+}
+
 async function handleSave() {
   if (documentStore.isSaving || !documentStore.hasDocument) return;
 
   try {
-    if (canvasEditorRef.value?.commitActiveBlock) {
+    if (currentEditorMode.value === 'reflow' && tipTapEditorRef.value?.editor) {
+      const json = tipTapEditorRef.value.editor.getJSON();
+      documentStore.updateFromTipTap(json);
+    } else if (canvasEditorRef.value?.commitActiveBlock) {
       canvasEditorRef.value.commitActiveBlock();
     }
 
     let edits = [];
-    if (canvasEditorRef.value?.buildRedactionPayload) {
+    if (currentEditorMode.value === 'canvas' && canvasEditorRef.value?.buildRedactionPayload) {
       edits = canvasEditorRef.value.buildRedactionPayload();
       documentStore.setEdits(edits);
+    } else {
+      edits = documentStore.edits;
     }
     const userRotations = canvasEditorRef.value?.getUserRotations ? canvasEditorRef.value.getUserRotations() : {};
 
@@ -636,10 +760,14 @@ async function handleSave() {
 
 async function handleExport() {
   try {
-    if (canvasEditorRef.value?.commitActiveBlock) {
+    if (currentEditorMode.value === 'reflow' && tipTapEditorRef.value?.editor) {
+      const json = tipTapEditorRef.value.editor.getJSON();
+      documentStore.updateFromTipTap(json);
+    } else if (canvasEditorRef.value?.commitActiveBlock) {
       canvasEditorRef.value.commitActiveBlock();
     }
-    if (canvasEditorRef.value?.buildRedactionPayload) {
+
+    if (currentEditorMode.value === 'canvas' && canvasEditorRef.value?.buildRedactionPayload) {
       const edits = canvasEditorRef.value.buildRedactionPayload();
       documentStore.setEdits(edits);
     }
@@ -659,6 +787,14 @@ async function handleExport() {
 }
 
 function handleRevertAll() {
+  if (currentEditorMode.value === 'reflow') {
+    documentStore.clearAllPatches(true);
+    if (tipTapEditorRef.value?.editor && documentStore.documentModel) {
+      const ast = convertDocumentModelToTipTap(documentStore.documentModel);
+      tipTapEditorRef.value.editor.commands.setContent(ast, false);
+    }
+    return;
+  }
   if (canvasEditorRef.value?.revertAll) {
     canvasEditorRef.value.revertAll();
   } else {
@@ -667,6 +803,12 @@ function handleRevertAll() {
 }
 
 function handleUndo() {
+  if (currentEditorMode.value === 'reflow') {
+    if (tipTapEditorRef.value?.editor?.can()?.undo?.()) {
+      tipTapEditorRef.value.editor.chain().focus().undo().run();
+      return;
+    }
+  }
   if (canvasEditorRef.value?.executeUndo) {
     canvasEditorRef.value.executeUndo();
   } else {
@@ -675,6 +817,12 @@ function handleUndo() {
 }
 
 function handleRedo() {
+  if (currentEditorMode.value === 'reflow') {
+    if (tipTapEditorRef.value?.editor?.can()?.redo?.()) {
+      tipTapEditorRef.value.editor.chain().focus().redo().run();
+      return;
+    }
+  }
   if (canvasEditorRef.value?.executeRedo) {
     canvasEditorRef.value.executeRedo();
   } else {
@@ -800,6 +948,67 @@ function confirmReset() {
   letter-spacing: 0.04em;
   border: 1px solid rgba(99, 102, 241, 0.4);
   text-transform: uppercase;
+}
+
+.header-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+.mode-switcher {
+  display: inline-flex;
+  align-items: center;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  height: 28px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.mode-btn:hover:not(.is-active) {
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.mode-btn.is-active {
+  background: #4f46e5;
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.mode-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 900px) {
+  .mode-btn span {
+    display: none;
+  }
+  .mode-btn {
+    padding: 4px 8px;
+  }
 }
 
 .header-right {

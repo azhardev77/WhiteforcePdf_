@@ -59,3 +59,28 @@
   - Test 4: Block deletion handling (PASSED)
 - `cd frontend; npm run build` -> BUILD SUCCESS (vite v5.4.21, 306 modules transformed, built in 6.13s).
 - `cd backend; mvn test-compile` -> BUILD SUCCESS (Total time: 14.978 s).
+
+## 2026-10-31 - Task 3 Execution Summary
+
+### Completed:
+- Mounted `TipTapEditor.vue` behind a Mode Switcher toggle in `frontend/src/views/EditorView.vue`:
+  1. Imported and registered `TipTapEditor.vue` and `convertDocumentModelToTipTap`.
+  2. Added reactive mode state `currentEditorMode: 'canvas' | 'reflow'` (defaulting to `'canvas'`) and `hasEverToggledReflow` to defer TipTap loading until explicitly requested by the user, adhering strictly to rule #3.
+  3. Integrated responsive segmented toggle control in the top header bar (`.mode-switcher` with `mode-toggle-canvas` and `mode-toggle-reflow`), visible when an active document is loaded.
+  4. Preserved workspace layout state between mode switches:
+     - Kept `PdfCanvasEditor` mounted with `v-show="currentEditorMode === 'canvas'"` to retain canvas viewports, zoom, and scroll position.
+     - Mounted `TipTapEditor` with `v-if="hasEverToggledReflow" v-show="currentEditorMode === 'reflow'"`.
+  5. Bidirectional State Synchronization on Mode Switch (`switchEditorMode`):
+     - When switching from Canvas to Reflow: commits active inline input, extracts redaction payload, and updates `documentStore.edits`.
+     - When switching from Reflow to Canvas: flushes TipTap AST via `tipTapEditorRef.value.editor.getJSON()`, updates store via `documentStore.updateFromTipTap(json)`, and updates `pageBlocksMap` / `editedBlocksState` on `canvasEditorRef` so updated text overlays and whiteouts immediately render.
+  6. Toolbar Action Uniformity across Modes:
+     - `handleSave`: Flushes TipTap AST if in reflow mode before executing `documentStore.saveDocument({ edits, userRotations })`.
+     - `handleExport`: Flushes TipTap AST before downloading PDF.
+     - `handleUndo` / `handleRedo`: Directs to TipTap editor undo/redo chain when in reflow mode, or canvas editor / store undo/redo in canvas mode.
+     - `handleRevertAll`: Resets store patches and reloads baseline AST into TipTap when in reflow mode, or invokes canvas `revertAll()`.
+  7. Marked Task 3 as complete `[x]` in `PRD.md`.
+
+### Verification Results:
+- `cd frontend; node test-converters.js; node test-tiptap-update.js` -> All tests passed cleanly.
+- `cd frontend; npm run build` -> BUILD SUCCESS (vite v5.4.21, 424 modules transformed, built in 8.21s).
+- `cd backend; mvn test-compile` -> BUILD SUCCESS (Total time: 16.313 s).
