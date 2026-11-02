@@ -3,6 +3,7 @@ package com.pdfeditor.rules;
 import com.pdfeditor.export.PdfRedactionService;
 import com.pdfeditor.export.TextRedactionEdit;
 import com.pdfeditor.extraction.ExtractionPipeline;
+import com.pdfeditor.extraction.Glyph;
 import com.pdfeditor.model.*;
 import com.pdfeditor.session.SessionValidationException;
 import org.apache.pdfbox.Loader;
@@ -44,6 +45,9 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Collection;
 import java.util.Deque;
 import java.util.Iterator;
@@ -126,8 +130,27 @@ public class ResumeRedactionService {
             return originalPdfBytes;
         }
 
+                // Collect page glyphs for pages with matches
+        Map<Integer, List<Glyph>> pageGlyphsMap = new HashMap<>();
+        try (PDDocument origDoc = Loader.loadPDF(originalPdfBytes)) {
+            for (Match match : matches) {
+                int pNum = match.getPageNumber();
+                if (!pageGlyphsMap.containsKey(pNum)) {
+                    try {
+                        List<Glyph> gList = extractionPipeline.getCharacterCollector().collectPage(origDoc, pNum);
+                        pageGlyphsMap.put(pNum, gList != null ? gList : Collections.emptyList());
+                    } catch (Exception e) {
+                        log.warn("Failed to collect glyphs for page {}: {}", pNum, e.getMessage());
+                        pageGlyphsMap.put(pNum, Collections.emptyList());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to load PDF for glyph collection: {}", e.getMessage());
+        }
+
         // Step 4: Convert matches to TextRedactionEdit with expanded bounding box for email/phone contact icons
-        final float ICON_EXPANSION_PT = 25.0f;
+        final float SAFETY_PADDING = 3.0f;
         List<TextRedactionEdit> edits = new ArrayList<>();
         for (Match match : matches) {
             String type = match.getType() != null ? match.getType().trim().toLowerCase() : "";
@@ -138,13 +161,21 @@ public class ResumeRedactionService {
             List<double[]> expandedLineBboxes = new ArrayList<>();
 
             if (isContact && expandedBbox.length >= 4) {
+                List<Glyph> pageGlyphs = pageGlyphsMap.get(match.getPageNumber());
                 // Find if there is preceding text on this line so we don't expand into legitimate user text
                 double origX = expandedBbox[0];
                 double origY = expandedBbox[1];
                 double origH = expandedBbox[3];
-                double maxPrecedingRight = calculateMaxPrecedingTextRight(docModel, match.getPageNumber(), origX, origY, origH);
-                double minAllowedX = maxPrecedingRight > 0 ? Math.max(maxPrecedingRight + 0.5, 0.0) : 0.0;
-                double newX = Math.max(minAllowedX, origX - ICON_EXPANSION_PT);
+                double maxPrecedingRight = calculateMaxPrecedingTextRight(docModel, pageGlyphs, match.getPageNumber(), origX, origY, origH);
+
+                float availableGap = (maxPrecedingRight > 0) ? (float) (origX - maxPrecedingRight) : (float) origX;
+                float leftExpansion = Math.max(0.0f, Math.min(22.0f, availableGap - SAFETY_PADDING));
+                double newX = origX - leftExpansion;
+                if (maxPrecedingRight > 0) {
+                    double minAllowedX = Math.min(origX, maxPrecedingRight + SAFETY_PADDING);
+                    newX = Math.max(newX, minAllowedX);
+                }
+                newX = Math.max(0.0, newX);
                 double shift = origX - newX;
                 expandedBbox[0] = newX;
                 expandedBbox[2] = expandedBbox[2] + shift;
@@ -155,9 +186,15 @@ public class ResumeRedactionService {
                             double origLx = lbox[0];
                             double origLy = lbox[1];
                             double origLh = lbox[3];
-                            double maxPrecedingL = calculateMaxPrecedingTextRight(docModel, match.getPageNumber(), origLx, origLy, origLh);
-                            double minAllowedLx = maxPrecedingL > 0 ? Math.max(maxPrecedingL + 0.5, 0.0) : 0.0;
-                            double newLx = Math.max(minAllowedLx, origLx - ICON_EXPANSION_PT);
+                            double maxPrecedingL = calculateMaxPrecedingTextRight(docModel, pageGlyphs, match.getPageNumber(), origLx, origLy, origLh);
+                            float availableGapL = (maxPrecedingL > 0) ? (float) (origLx - maxPrecedingL) : (float) origLx;
+                            float leftExpansionL = Math.max(0.0f, Math.min(22.0f, availableGapL - SAFETY_PADDING));
+                            double newLx = origLx - leftExpansionL;
+                            if (maxPrecedingL > 0) {
+                                double minAllowedLx = Math.min(origLx, maxPrecedingL + SAFETY_PADDING);
+                                newLx = Math.max(newLx, minAllowedLx);
+                            }
+                            newLx = Math.max(0.0, newLx);
                             double shiftL = origLx - newLx;
                             expandedLineBboxes.add(new double[]{newLx, lbox[1], lbox[2] + shiftL, lbox[3]});
                         }
@@ -766,20 +803,21 @@ public class ResumeRedactionService {
                                     float pageH, float originX, float originY) {
         float tol = 4.0f;
         float rightX = curX + width;
+        float topY = curY + 1.0f;
         for (Match m : matches) {
             if (m.getLineBboxes() != null && !m.getLineBboxes().isEmpty()) {
                 for (double[] box : m.getLineBboxes()) {
-                    if (boxOverlaps(curX, rightX, curY, box, pageH, originX, originY, tol)) return true;
+                    if (boxOverlaps(curX, rightX, curY, topY, box, pageH, originX, originY, tol)) return true;
                 }
             }
             if (m.getBbox() != null && m.getBbox().length >= 4) {
-                if (boxOverlaps(curX, rightX, curY, m.getBbox(), pageH, originX, originY, tol)) return true;
+                if (boxOverlaps(curX, rightX, curY, topY, m.getBbox(), pageH, originX, originY, tol)) return true;
             }
         }
         return false;
     }
 
-    private boolean boxOverlaps(float curX, float rightX, float curY, double[] box,
+    private boolean boxOverlaps(float curX, float rightX, float curY, float topY, double[] box,
                                 float pageH, float originX, float originY, float tol) {
         float boxX = (float) box[0];
         float boxY = (float) box[1];
@@ -791,63 +829,122 @@ public class ResumeRedactionService {
         float pdfMinY = originY + (pageH - boxY - boxH) - tol;
         float pdfMaxY = originY + (pageH - boxY) + tol;
 
-        if (curY < pdfMinY || curY > pdfMaxY) return false;
-        return Math.max(curX, pdfMinX) < Math.min(rightX, pdfMaxX);
+        boolean yOverlaps = Math.max(curY, pdfMinY) <= Math.min(topY, pdfMaxY);
+        boolean xOverlaps = Math.max(curX, pdfMinX) <= Math.min(rightX, pdfMaxX);
+        return xOverlaps && yOverlaps;
     }
 
     private static final String[] CONTACT_ICON_TOKENS = {
             "\u260E", "\u2709", "\uF095", "\uF0E0", "fa-phone", "fa-envelope", "fa-envelope-o", "fa-mobile", "✉", "☎", "✆", "📞", "📧", "📱"
     };
 
-    private double calculateMaxPrecedingTextRight(DocumentModel docModel, int pageNumber,
+    private double calculateMaxPrecedingTextRight(DocumentModel docModel, List<Glyph> glyphs, int pageNumber,
                                                   double targetX, double targetY, double targetH) {
-        if (docModel == null || docModel.getPages() == null) return 0.0;
         double maxRight = 0.0;
         double targetTop = targetY;
         double targetBottom = targetY + targetH;
 
-        for (PageModel page : docModel.getPages()) {
-            if (page.getPageNumber() != pageNumber) continue;
-            List<Block> blocks = page.getBlocks();
-            if (blocks == null) continue;
+        // 1. Check exact CharacterCollector glyphs if available
+        if (glyphs != null && !glyphs.isEmpty()) {
+            for (Glyph charGlyph : glyphs) {
+                String text = charGlyph.getText();
+                if (text == null || text.isBlank()) continue;
 
-            for (Block b : blocks) {
-                List<TextRun> runs = null;
-                if (b instanceof ParagraphBlock pb) {
-                    runs = pb.getRuns();
-                } else if (b instanceof HeadingBlock hb) {
-                    runs = hb.getRuns();
+                double charTop = charGlyph.getY();
+                double charBottom = charGlyph.getY() + charGlyph.getHeight();
+                double yOverlap = Math.max(0, Math.min(targetBottom, charBottom) - Math.max(targetTop, charTop));
+                if (yOverlap > 2.0) {
+                    double charX = charGlyph.getX();
+                    double charW = charGlyph.getWidth();
+                    // Preceding character: starts before targetX
+                    if (charX < targetX - 0.5) {
+                        double charRight = charX + charW;
+                        if (charRight <= targetX + 1.0) {
+                            maxRight = Math.max(maxRight, charRight);
+                        } else {
+                            maxRight = Math.max(maxRight, targetX);
+                        }
+                    }
                 }
+            }
+        }
 
-                if (runs != null) {
-                    for (TextRun run : runs) {
-                        String text = run.getText();
-                        if (text == null || text.isBlank()) continue;
-                        double[] box = run.getBbox();
-                        if (box == null || box.length < 4) continue;
+        // 2. Also check DocumentModel blocks and runs (for paragraphs, headings, lists, tables)
+        if (docModel != null && docModel.getPages() != null) {
+            for (PageModel page : docModel.getPages()) {
+                if (page.getPageNumber() != pageNumber) continue;
+                List<Block> blocks = page.getBlocks();
+                if (blocks == null) continue;
 
-                        double rx = box[0];
-                        double ry = box[1];
-                        double rw = box[2];
-                        double rh = box[3];
-                        double rTop = ry;
-                        double rBottom = ry + rh;
+                List<TextRun> runs = extractAllRunsFromBlocks(blocks);
+                for (TextRun run : runs) {
+                    String text = run.getText();
+                    if (text == null || text.isBlank()) continue;
+                    double[] box = run.getBbox();
+                    if (box == null || box.length < 4) continue;
 
-                        // Check vertical overlap with target line
-                        double yOverlap = Math.max(0, Math.min(targetBottom, rBottom) - Math.max(targetTop, rTop));
-                        if (yOverlap > 2.0) {
-                            if (rx + rw <= targetX + 1.0) {
-                                maxRight = Math.max(maxRight, rx + rw);
-                            } else if (rx < targetX) {
-                                // Run starts before targetX and continues past it
-                                maxRight = Math.max(maxRight, targetX);
+                    double rx = box[0];
+                    double ry = box[1];
+                    double rw = box[2];
+                    double rh = box[3];
+                    double rTop = ry;
+                    double rBottom = ry + rh;
+
+                    double yOverlap = Math.max(0, Math.min(targetBottom, rBottom) - Math.max(targetTop, rTop));
+                    if (yOverlap > 2.0) {
+                        int len = text.length();
+                        if (len > 0) {
+                            double charW = rw / len;
+                            for (int i = 0; i < len; i++) {
+                                char ch = text.charAt(i);
+                                if (Character.isWhitespace(ch)) continue;
+                                double cX = rx + (i * charW);
+                                double cRight = cX + charW;
+                                if (cX < targetX - 0.5 && cRight <= targetX + 1.0) {
+                                    maxRight = Math.max(maxRight, cRight);
+                                }
                             }
                         }
                     }
                 }
             }
         }
+
         return maxRight;
+    }
+
+    private double calculateMaxPrecedingTextRight(DocumentModel docModel, int pageNumber,
+                                                  double targetX, double targetY, double targetH) {
+        return calculateMaxPrecedingTextRight(docModel, null, pageNumber, targetX, targetY, targetH);
+    }
+
+    private List<TextRun> extractAllRunsFromBlocks(List<Block> blocks) {
+        List<TextRun> runs = new ArrayList<>();
+        if (blocks == null) return runs;
+        for (Block b : blocks) {
+            if (b instanceof ParagraphBlock pb) {
+                if (pb.getRuns() != null) runs.addAll(pb.getRuns());
+            } else if (b instanceof HeadingBlock hb) {
+                if (hb.getRuns() != null) runs.addAll(hb.getRuns());
+            } else if (b instanceof ListBlock lb) {
+                if (lb.getItems() != null) {
+                    for (ParagraphBlock pb : lb.getItems()) {
+                        if (pb != null && pb.getRuns() != null) runs.addAll(pb.getRuns());
+                    }
+                }
+            } else if (b instanceof TableBlock tb) {
+                if (tb.getCells() != null) {
+                    for (List<ParagraphBlock> row : tb.getCells()) {
+                        if (row != null) {
+                            for (ParagraphBlock pb : row) {
+                                if (pb != null && pb.getRuns() != null) runs.addAll(pb.getRuns());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return runs;
     }
 
     private boolean isPointInsideMatches(float curX, float curY, float width, float height,
@@ -855,16 +952,17 @@ public class ResumeRedactionService {
         if (matches == null || matches.isEmpty()) return false;
         float tol = 4.0f;
         float rightX = curX + width;
+        float topY = curY + height;
         for (Match m : matches) {
             List<double[]> boxes = m.getExpandedLineBboxes();
             if (boxes != null && !boxes.isEmpty()) {
                 for (double[] box : boxes) {
-                    if (boxOverlaps(curX, rightX, curY, box, pageH, originX, originY, tol)) return true;
+                    if (boxOverlaps(curX, rightX, curY, topY, box, pageH, originX, originY, tol)) return true;
                 }
             }
             double[] bbox = m.getExpandedBbox();
             if (bbox != null && bbox.length >= 4) {
-                if (boxOverlaps(curX, rightX, curY, bbox, pageH, originX, originY, tol)) return true;
+                if (boxOverlaps(curX, rightX, curY, topY, bbox, pageH, originX, originY, tol)) return true;
             }
         }
         return false;

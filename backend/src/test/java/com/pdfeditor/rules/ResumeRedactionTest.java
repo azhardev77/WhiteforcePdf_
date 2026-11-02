@@ -285,4 +285,108 @@ class ResumeRedactionTest {
             assertThat(info.getSubject()).doesNotContain("555-432-1098");
         }
     }
+    @Test
+    @DisplayName("Preceding location characters ('Jabalpur, MP |') are 100% preserved when directly adjacent to contact info and icons")
+    void testPrecedingLocationTextPreservedWhenAdjacentToContactInfo() throws Exception {
+        byte[] samplePdf;
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            doc.addPage(page);
+
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                // Header Name
+                cs.beginText();
+                cs.setFont(new org.apache.pdfbox.pdmodel.font.PDType1Font(
+                        org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName.HELVETICA_BOLD), 16);
+                cs.newLineAtOffset(50, 750);
+                cs.showText("Mohd Azhar Mansoori");
+                cs.endText();
+
+                // Directly adjacent line: "Jabalpur, MP | " + [Vector Icon] + "test@example.com"
+                cs.beginText();
+                cs.setFont(new org.apache.pdfbox.pdmodel.font.PDType1Font(
+                        org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName.HELVETICA), 11);
+                cs.newLineAtOffset(50, 720);
+                cs.showText("Jabalpur, MP | ");
+                cs.endText();
+
+                // Vector icon immediately before email (box at X: 135 to 145, Y: 716 to 726)
+                cs.saveGraphicsState();
+                cs.setLineWidth(1.0f);
+                cs.addRect(135, 716, 10, 10);
+                cs.stroke();
+                cs.restoreGraphicsState();
+
+                // Contact Email starting at X: 150
+                cs.beginText();
+                cs.setFont(new org.apache.pdfbox.pdmodel.font.PDType1Font(
+                        org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName.HELVETICA), 11);
+                cs.newLineAtOffset(150, 720);
+                cs.showText("test@example.com");
+                cs.endText();
+
+                // Phone with vector icon
+                cs.saveGraphicsState();
+                cs.setLineWidth(1.0f);
+                cs.addRect(50, 696, 10, 10);
+                cs.stroke();
+                cs.restoreGraphicsState();
+
+                cs.beginText();
+                cs.setFont(new org.apache.pdfbox.pdmodel.font.PDType1Font(
+                        org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName.HELVETICA), 11);
+                cs.newLineAtOffset(65, 700);
+                cs.showText("+91 98765 43210");
+                cs.endText();
+
+                // Other non-PII text
+                cs.beginText();
+                cs.setFont(new org.apache.pdfbox.pdmodel.font.PDType1Font(
+                        org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName.HELVETICA), 12);
+                cs.newLineAtOffset(50, 650);
+                cs.showText("Skills: Java, Spring Boot, Architecture, Microservices");
+                cs.endText();
+            }
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            doc.save(baos);
+            samplePdf = baos.toByteArray();
+        }
+
+        byte[] redactedBytes = resumeRedactionService.redactResume(samplePdf);
+        assertThat(redactedBytes).isNotNull();
+
+        try (PDDocument doc = Loader.loadPDF(redactedBytes)) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extracted = stripper.getText(doc);
+
+            // Assert that all characters of "Jabalpur, MP" (including 'P' and pipe '|') are 100% preserved
+            assertThat(extracted).contains("Jabalpur, MP |");
+            assertThat(extracted).contains("Jabalpur");
+            assertThat(extracted).contains("MP");
+            assertThat(extracted).contains("P");
+            assertThat(extracted).contains("|");
+            assertThat(extracted).contains("Mohd Azhar Mansoori");
+            assertThat(extracted).contains("Skills: Java, Spring Boot, Architecture, Microservices");
+
+            // Assert contact info (email and phone) is removed
+            assertThat(extracted).doesNotContain("test@example.com");
+            assertThat(extracted).doesNotContain("+91 98765 43210");
+            assertThat(extracted).doesNotContain("98765 43210");
+
+            // Assert vector icon is scrubbed from stream
+            for (PDPage page : doc.getPages()) {
+                Iterator<PDStream> streams = page.getContentStreams();
+                while (streams.hasNext()) {
+                    PDStream stream = streams.next();
+                    try (InputStream is = stream.createInputStream()) {
+                        String streamContent = new String(is.readAllBytes(), StandardCharsets.ISO_8859_1);
+                        assertThat(streamContent).doesNotContain("test@example.com");
+                        assertThat(streamContent).doesNotContain("98765");
+                        assertThat(streamContent).doesNotContain("135 716");
+                    }
+                }
+            }
+        }
+    }
 }

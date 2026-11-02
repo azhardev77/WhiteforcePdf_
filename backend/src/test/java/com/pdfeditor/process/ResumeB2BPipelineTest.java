@@ -319,5 +319,103 @@ class ResumeB2BPipelineTest {
             assertThat(text).contains("Page 3 Content");
         }
     }
-}
+    @Test
+    @DisplayName("B2B Pipeline preserves adjacent location text 'Jabalpur, MP |' while stripping icon, email and phone")
+    void testAdjacentLocationAndContactPreservesPrecedingTextB2B() throws Exception {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            doc.addPage(page);
 
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                // Name
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 16);
+                cs.newLineAtOffset(50, 750);
+                cs.showText("Alice Smith");
+                cs.endText();
+
+                // Location directly adjacent to vector icon and email: "Jabalpur, MP | [Icon] test@example.com"
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 11);
+                cs.newLineAtOffset(50, 720);
+                cs.showText("Jabalpur, MP | ");
+                cs.endText();
+
+                // Vector icon immediately before email
+                cs.saveGraphicsState();
+                cs.setLineWidth(1.0f);
+                cs.addRect(135, 716, 10, 10);
+                cs.stroke();
+                cs.restoreGraphicsState();
+
+                // Email
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 11);
+                cs.newLineAtOffset(150, 720);
+                cs.showText("test@example.com");
+                cs.endText();
+
+                // Phone with vector icon
+                cs.saveGraphicsState();
+                cs.setLineWidth(1.0f);
+                cs.addRect(50, 696, 10, 10);
+                cs.stroke();
+                cs.restoreGraphicsState();
+
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 11);
+                cs.newLineAtOffset(65, 700);
+                cs.showText("+91 98765 43210");
+                cs.endText();
+
+                // Other content
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                cs.newLineAtOffset(50, 650);
+                cs.showText("Senior Software Engineer at Tech Corp.");
+                cs.endText();
+            }
+            doc.save(baos);
+        }
+
+        MockMultipartFile file = new MockMultipartFile("file", "resume_adjacent.pdf", "application/pdf", baos.toByteArray());
+
+        MvcResult result = mockMvc.perform(multipart("/api/v1/resume/process")
+                        .file(file)
+                        .header("X-API-KEY", VALID_API_KEY)
+                        .param("redactEmail", "true")
+                        .param("redactPhone", "true"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Page-Count", "1"))
+                .andReturn();
+
+        ResumeProcessResponse response = objectMapper.readValue(
+                result.getResponse().getContentAsString(),
+                ResumeProcessResponse.class
+        );
+
+        assertThat(response.extractedDetails().emails()).contains("test@example.com");
+        assertThat(response.extractedDetails().phones()).contains("+91 98765 43210");
+
+        byte[] sanitizedBytes = Base64.getDecoder().decode(response.redactedPdfBase64());
+        try (PDDocument doc = Loader.loadPDF(sanitizedBytes)) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            String text = stripper.getText(doc);
+
+            // Assert that all characters of "Jabalpur, MP" (including 'P' and pipe '|') are 100% preserved
+            assertThat(text).contains("Jabalpur, MP |");
+            assertThat(text).contains("Jabalpur");
+            assertThat(text).contains("MP");
+            assertThat(text).contains("P");
+            assertThat(text).contains("|");
+            assertThat(text).contains("Alice Smith");
+            assertThat(text).contains("Senior Software Engineer");
+
+            // Assert email and phone are removed
+            assertThat(text).doesNotContain("test@example.com");
+            assertThat(text).doesNotContain("+91 98765 43210");
+            assertThat(text).doesNotContain("98765 43210");
+        }
+    }
+}
