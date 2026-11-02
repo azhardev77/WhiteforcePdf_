@@ -93,7 +93,7 @@ public class ProcessController {
         if (apiRateLimiter != null && !apiRateLimiter.tryAcquire(apiKey)) {
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(createErrorBody(429, "Too Many Requests", "Rate limit exceeded. Please wait before retrying."));
+                    .body(createErrorBody(429, "Too Many Requests", "Rate limit exceeded. Please wait before retrying.", request.getRequestURI()));
         }
 
         // Validate file via SessionValidator
@@ -212,9 +212,11 @@ public class ProcessController {
 
         if (leakDetected) {
             Map<String, Object> errorBody = new LinkedHashMap<>();
-            errorBody.put("error", "redaction_incomplete");
+            errorBody.put("timestamp", java.time.Instant.now().toString());
             errorBody.put("status", 422);
+            errorBody.put("error", "redaction_incomplete");
             errorBody.put("message", "Redaction incomplete: contact info or links still detected in output PDF");
+            errorBody.put("path", request.getRequestURI());
             return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(errorBody);
@@ -258,7 +260,7 @@ public class ProcessController {
         if (apiRateLimiter != null && !apiRateLimiter.tryAcquire(apiKey)) {
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(createErrorBody(429, "Too Many Requests", "Rate limit exceeded. Please wait before retrying."));
+                    .body(createErrorBody(429, "Too Many Requests", "Rate limit exceeded. Please wait before retrying.", request.getRequestURI()));
         }
 
         // Validate file via SessionValidator (checks non-empty, size <= 10MB, %PDF magic bytes, loadable, unencrypted)
@@ -292,24 +294,7 @@ public class ProcessController {
                 .body(result.pdfBytes());
     }
 
-    @ExceptionHandler(SessionValidationException.class)
-    public ResponseEntity<Map<String, Object>> handleValidationException(SessionValidationException ex) {
-        String errorName = switch (ex.getStatusCode()) {
-            case 413 -> "Payload Too Large";
-            case 422 -> "Unprocessable Entity";
-            default -> "Bad Request";
-        };
-        return ResponseEntity.status(ex.getStatusCode())
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(createErrorBody(ex.getStatusCode(), errorName, ex.getMessage()));
-    }
 
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<Map<String, Object>> handleIllegalArgumentException(IllegalArgumentException ex) {
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(createErrorBody(400, "Bad Request", ex.getMessage()));
-    }
 
     private String getClientIp(HttpServletRequest request) {
         String xForwardedFor = request.getHeader("X-Forwarded-For");
@@ -337,11 +322,13 @@ public class ProcessController {
         return cleaned.isEmpty() ? raw.trim() : cleaned;
     }
 
-    private Map<String, Object> createErrorBody(int status, String error, String message) {
+    private Map<String, Object> createErrorBody(int status, String error, String message, String path) {
         Map<String, Object> map = new LinkedHashMap<>();
+        map.put("timestamp", java.time.Instant.now().toString());
         map.put("status", status);
         map.put("error", error);
         map.put("message", message);
+        map.put("path", path != null ? path : "");
         return map;
     }
 }

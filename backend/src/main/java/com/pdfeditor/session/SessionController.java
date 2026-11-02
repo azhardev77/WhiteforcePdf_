@@ -177,22 +177,7 @@ public class SessionController {
         return ResponseEntity.ok(body);
     }
 
-    @ExceptionHandler(SessionValidationException.class)
-    public ResponseEntity<Map<String, Object>> handleValidationException(SessionValidationException ex) {
-        String errorName = switch (ex.getStatusCode()) {
-            case 413 -> "Payload Too Large";
-            case 422 -> "Unprocessable Entity";
-            default -> "Bad Request";
-        };
-        return ResponseEntity.status(ex.getStatusCode())
-                .body(createErrorBody(ex.getStatusCode(), errorName, ex.getMessage()));
-    }
 
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<Map<String, Object>> handleIllegalArgumentException(IllegalArgumentException ex) {
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(createErrorBody(400, "Bad Request", ex.getMessage()));
-    }
 
     private String resolveClientId(HttpServletRequest request) {
         String clientId = request.getHeader("X-CLIENT-ID");
