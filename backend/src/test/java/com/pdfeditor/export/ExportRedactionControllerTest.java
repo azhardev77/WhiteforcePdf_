@@ -40,6 +40,7 @@ import static org.mockito.Mockito.doThrow;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestPropertySource(properties = {
         "app.security.api-key=test_secret_api_key_xyz",
+        "app.security.ui-api-key=test_ui_secret_api_key_xyz",
         "app.security.header-name=X-API-KEY"
 })
 class ExportRedactionControllerTest {
@@ -103,7 +104,7 @@ class ExportRedactionControllerTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        headers.set("X-API-KEY", "test_secret_api_key_xyz");
+        headers.set("X-API-KEY", "test_ui_secret_api_key_xyz");
 
         HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
 
@@ -153,7 +154,7 @@ class ExportRedactionControllerTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        headers.set("X-API-KEY", "test_secret_api_key_xyz");
+        headers.set("X-API-KEY", "test_ui_secret_api_key_xyz");
 
         HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
 
@@ -200,7 +201,7 @@ class ExportRedactionControllerTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        headers.set("X-API-KEY", "test_secret_api_key_xyz");
+        headers.set("X-API-KEY", "test_ui_secret_api_key_xyz");
 
         HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
 

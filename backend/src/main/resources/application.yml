@@ -13,12 +13,12 @@ spring:
 
 pdfeditor:
   security:
-    api-key: ${API_KEY:wf_live_secret_key_2026}
+    api-key: ${API_KEY:}
 
 app:
   public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:5173}
   security:
-    api-key: ${pdfeditor.security.api-key:${API_KEY:wf_live_secret_key_2026}}
+    api-key: ${pdfeditor.security.api-key:${API_KEY:}}
     ui-api-key: ${UI_API_KEY:}
     header-name: X-API-KEY
   sessions:

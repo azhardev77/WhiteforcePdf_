@@ -28,6 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({SecurityConfig.class, CorsConfig.class})
 @TestPropertySource(properties = {
         "app.security.api-key=test_secret_api_key_xyz",
+        "app.security.ui-api-key=test_ui_api_key_xyz",
         "app.security.header-name=X-API-KEY"
 })
 class ApiKeyAuthFilterTest {
@@ -66,7 +67,7 @@ class ApiKeyAuthFilterTest {
     @DisplayName("Should allow request through when valid X-API-KEY header is supplied")
     void shouldAllowWhenValidApiKeyProvided() throws Exception {
         mockMvc.perform(post("/api/documents/extract-sample")
-                        .header("X-API-KEY", "test_secret_api_key_xyz")
+                        .header("X-API-KEY", "test_ui_api_key_xyz")
                         .param("filename", ""))
                 // Controller handles the request (returns 400 for empty filename, proving auth succeeded!)
                 .andExpect(status().isBadRequest());
@@ -76,7 +77,7 @@ class ApiKeyAuthFilterTest {
     @DisplayName("Should allow request when API key is provided in lowercase header x-api-key")
     void shouldAllowWhenLowercaseApiKeyHeaderProvided() throws Exception {
         mockMvc.perform(post("/api/documents/extract-sample")
-                        .header("x-api-key", "test_secret_api_key_xyz")
+                        .header("x-api-key", "test_ui_api_key_xyz")
                         .param("filename", ""))
                 .andExpect(status().isBadRequest());
     }

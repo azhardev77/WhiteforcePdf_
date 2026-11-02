@@ -36,13 +36,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
-        "pdfeditor.security.api-key=wf_live_secret_key_2026",
-        "app.security.api-key=wf_live_secret_key_2026",
+        "pdfeditor.security.api-key=test_b2b_secret_key_2026",
+        "app.security.api-key=test_b2b_secret_key_2026",
         "app.security.header-name=X-API-KEY"
 })
 class ResumeB2BPipelineTest {
 
-    private static final String VALID_API_KEY = "wf_live_secret_key_2026";
+    private static final String VALID_API_KEY = "test_b2b_secret_key_2026";
 
     @Autowired
     private MockMvc mockMvc;
