@@ -263,7 +263,7 @@ public class ProcessController {
                     .body(createErrorBody(429, "Too Many Requests", "Rate limit exceeded. Please wait before retrying.", request.getRequestURI()));
         }
 
-        // Validate file via SessionValidator (checks non-empty, size <= 10MB, %PDF magic bytes, loadable, unencrypted)
+        // Validate file via SessionValidator (checks non-empty, size <= maxSizeBytes, %PDF magic bytes, loadable, unencrypted)
         byte[] pdfBytes = sessionValidator.validate(file);
 
         // Parse and validate ops
