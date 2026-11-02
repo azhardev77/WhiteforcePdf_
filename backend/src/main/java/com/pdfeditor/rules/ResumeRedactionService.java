@@ -150,7 +150,7 @@ public class ResumeRedactionService {
         }
 
         // Step 4: Convert matches to TextRedactionEdit with expanded bounding box for email/phone contact icons
-        final float SAFETY_PADDING = 3.0f;
+        final float SAFETY_PADDING = 4.0f;
         List<TextRedactionEdit> edits = new ArrayList<>();
         for (Match match : matches) {
             String type = match.getType() != null ? match.getType().trim().toLowerCase() : "";
@@ -169,12 +169,17 @@ public class ResumeRedactionService {
                 double maxPrecedingRight = calculateMaxPrecedingTextRight(docModel, pageGlyphs, match.getPageNumber(), origX, origY, origH);
 
                 float availableGap = (maxPrecedingRight > 0) ? (float) (origX - maxPrecedingRight) : (float) origX;
-                float leftExpansion = Math.max(0.0f, Math.min(22.0f, availableGap - SAFETY_PADDING));
-                double newX = origX - leftExpansion;
-                if (maxPrecedingRight > 0) {
-                    double minAllowedX = Math.min(origX, maxPrecedingRight + SAFETY_PADDING);
-                    newX = Math.max(newX, minAllowedX);
+                double newX;
+                if (availableGap <= SAFETY_PADDING) {
+                    newX = origX;
+                } else {
+                    float safeExpansion = Math.max(0.0f, availableGap - SAFETY_PADDING);
+                    float actualExpansion = Math.min(18.0f, safeExpansion);
+                    newX = (maxPrecedingRight > 0)
+                            ? Math.max(origX - actualExpansion, maxPrecedingRight + SAFETY_PADDING)
+                            : Math.max(0.0, origX - actualExpansion);
                 }
+                newX = Math.min(newX, origX);
                 newX = Math.max(0.0, newX);
                 double shift = origX - newX;
                 expandedBbox[0] = newX;
@@ -188,12 +193,17 @@ public class ResumeRedactionService {
                             double origLh = lbox[3];
                             double maxPrecedingL = calculateMaxPrecedingTextRight(docModel, pageGlyphs, match.getPageNumber(), origLx, origLy, origLh);
                             float availableGapL = (maxPrecedingL > 0) ? (float) (origLx - maxPrecedingL) : (float) origLx;
-                            float leftExpansionL = Math.max(0.0f, Math.min(22.0f, availableGapL - SAFETY_PADDING));
-                            double newLx = origLx - leftExpansionL;
-                            if (maxPrecedingL > 0) {
-                                double minAllowedLx = Math.min(origLx, maxPrecedingL + SAFETY_PADDING);
-                                newLx = Math.max(newLx, minAllowedLx);
+                            double newLx;
+                            if (availableGapL <= SAFETY_PADDING) {
+                                newLx = origLx;
+                            } else {
+                                float safeExpansionL = Math.max(0.0f, availableGapL - SAFETY_PADDING);
+                                float actualExpansionL = Math.min(18.0f, safeExpansionL);
+                                newLx = (maxPrecedingL > 0)
+                                        ? Math.max(origLx - actualExpansionL, maxPrecedingL + SAFETY_PADDING)
+                                        : Math.max(0.0, origLx - actualExpansionL);
                             }
+                            newLx = Math.min(newLx, origLx);
                             newLx = Math.max(0.0, newLx);
                             double shiftL = origLx - newLx;
                             expandedLineBboxes.add(new double[]{newLx, lbox[1], lbox[2] + shiftL, lbox[3]});
@@ -859,11 +869,7 @@ public class ResumeRedactionService {
                     // Preceding character: starts before targetX
                     if (charX < targetX - 0.5) {
                         double charRight = charX + charW;
-                        if (charRight <= targetX + 1.0) {
-                            maxRight = Math.max(maxRight, charRight);
-                        } else {
-                            maxRight = Math.max(maxRight, targetX);
-                        }
+                        maxRight = Math.max(maxRight, charRight);
                     }
                 }
             }
@@ -900,7 +906,7 @@ public class ResumeRedactionService {
                                 if (Character.isWhitespace(ch)) continue;
                                 double cX = rx + (i * charW);
                                 double cRight = cX + charW;
-                                if (cX < targetX - 0.5 && cRight <= targetX + 1.0) {
+                                if (cX < targetX - 0.5) {
                                     maxRight = Math.max(maxRight, cRight);
                                 }
                             }
