@@ -14,6 +14,14 @@ import com.pdfeditor.session.SessionValidationException;
 import com.pdfeditor.session.SessionValidator;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.cos.COSBase;
+import org.apache.pdfbox.cos.COSDictionary;
+import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.interactive.action.PDActionURI;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink;
+
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.springframework.beans.factory.annotation.Autowired;
 import jakarta.servlet.http.HttpServletRequest;
@@ -139,10 +147,75 @@ public class ProcessController {
             redactedPdfBytes = resumeRedactionService.redactResume(pdfBytes, categories);
         }
 
-        // 3. Verify Page Count Invariant
+        // 3. Fail-closed verification on the OUTPUT PDF
+        boolean leakDetected = false;
         int pageCount;
         try (PDDocument doc = Loader.loadPDF(redactedPdfBytes)) {
             pageCount = doc.getNumberOfPages();
+
+            // Re-run PiiDetector on extracted text
+            PDFTextStripper stripper = new PDFTextStripper();
+            String outText = stripper.getText(doc);
+            if (outText != null && !outText.isBlank()) {
+                List<PiiDetector.PiiSpan> remainingSpans = PiiDetector.findPIISpans(outText);
+                for (PiiDetector.PiiSpan span : remainingSpans) {
+                    String spanType = span.getType() != null ? span.getType().toLowerCase() : "";
+                    if ((redactEmail && "email".equals(spanType)) || (redactPhone && "phone".equals(spanType))) {
+                        leakDetected = true;
+                        break;
+                    }
+                }
+            }
+
+            // Re-run link scan on annotations
+            if (!leakDetected) {
+                for (PDPage page : doc.getPages()) {
+                    List<PDAnnotation> annotations = page.getAnnotations();
+                    if (annotations != null) {
+                        for (PDAnnotation annot : annotations) {
+                            if (annot instanceof PDAnnotationLink link) {
+                                String uri = null;
+                                if (link.getAction() instanceof PDActionURI uriAction) {
+                                    uri = uriAction.getURI();
+                                }
+                                if (uri == null) {
+                                    COSDictionary cosDict = link.getCOSObject();
+                                    COSBase aBase = cosDict.getDictionaryObject(COSName.A);
+                                    if (aBase instanceof COSDictionary aDict) {
+                                        uri = aDict.getString(COSName.URI);
+                                    }
+                                }
+                                if (uri != null) {
+                                    String lowerUri = uri.toLowerCase();
+                                    if ((redactEmail && lowerUri.startsWith("mailto:")) || (redactPhone && lowerUri.startsWith("tel:"))) {
+                                        leakDetected = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (leakDetected) break;
+                }
+            }
+        } catch (Exception e) {
+            leakDetected = true;
+            pageCount = 1;
+        }
+
+        if (leakDetected) {
+            Map<String, Object> errorBody = new LinkedHashMap<>();
+            errorBody.put("error", "redaction_incomplete");
+            errorBody.put("status", 422);
+            errorBody.put("message", "Redaction incomplete: contact info or links still detected in output PDF");
+            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(errorBody);
+        }
+
+        List<String> warnings = new java.util.ArrayList<>();
+        if (emails.isEmpty() && phones.isEmpty()) {
+            warnings.add("no_contact_found");
         }
 
         String base64Pdf = java.util.Base64.getEncoder().encodeToString(redactedPdfBytes);
@@ -150,7 +223,8 @@ public class ProcessController {
         ResumeProcessResponse response = new ResumeProcessResponse(
                 new ResumeProcessResponse.ExtractedDetails(new java.util.ArrayList<>(emails), new java.util.ArrayList<>(phones)),
                 base64Pdf,
-                pageCount
+                pageCount,
+                warnings
         );
 
         HttpHeaders headers = new HttpHeaders();

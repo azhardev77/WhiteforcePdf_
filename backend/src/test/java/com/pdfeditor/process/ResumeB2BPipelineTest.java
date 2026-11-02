@@ -418,4 +418,37 @@ class ResumeB2BPipelineTest {
             assertThat(text).doesNotContain("98765 43210");
         }
     }
+
+    @Test
+    @DisplayName("B2B Pipeline returns warnings array with no_contact_found when resume has no contact info")
+    void testNoContactFoundWarning() throws Exception {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            doc.addPage(page);
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                cs.newLineAtOffset(50, 750);
+                cs.showText("Jane Doe - Professional Developer with No Contacts");
+                cs.endText();
+            }
+            doc.save(baos);
+        }
+
+        MockMultipartFile file = new MockMultipartFile("file", "no_contact.pdf", "application/pdf", baos.toByteArray());
+
+        MvcResult result = mockMvc.perform(multipart("/api/v1/resume/process")
+                        .file(file)
+                        .header("X-API-KEY", VALID_API_KEY))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        ResumeProcessResponse response = objectMapper.readValue(
+                result.getResponse().getContentAsString(),
+                ResumeProcessResponse.class
+        );
+
+        assertThat(response.warnings()).contains("no_contact_found");
+    }
 }
