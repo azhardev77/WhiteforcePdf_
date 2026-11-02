@@ -21,6 +21,8 @@ app:
     api-key: ${pdfeditor.security.api-key:${API_KEY:}}
     ui-api-key: ${UI_API_KEY:}
     header-name: X-API-KEY
+  api:
+    rate-limit-per-minute: ${APP_API_RATE_LIMIT:120}
   sessions:
     dir: ${APP_SESSIONS_DIR:target/sessions}
     ttl-minutes: ${APP_SESSIONS_TTL:60}

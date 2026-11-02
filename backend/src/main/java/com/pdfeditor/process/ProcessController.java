@@ -9,6 +9,7 @@ import com.pdfeditor.rules.Match;
 import com.pdfeditor.rules.PiiDetector;
 import com.pdfeditor.rules.ResumeRedactionService;
 import com.pdfeditor.rules.ResumeRules;
+import com.pdfeditor.security.ApiRateLimiter;
 import com.pdfeditor.session.SessionRateLimiter;
 import com.pdfeditor.session.SessionValidationException;
 import com.pdfeditor.session.SessionValidator;
@@ -47,6 +48,7 @@ public class ProcessController {
     private final ResumeRedactionService resumeRedactionService;
     private final ExtractionPipeline extractionPipeline;
     private final ResumeRules resumeRules;
+    private final ApiRateLimiter apiRateLimiter;
 
     @Autowired
     public ProcessController(ProcessService processService,
@@ -54,19 +56,21 @@ public class ProcessController {
                              SessionRateLimiter sessionRateLimiter,
                              ResumeRedactionService resumeRedactionService,
                              ExtractionPipeline extractionPipeline,
-                             ResumeRules resumeRules) {
+                             ResumeRules resumeRules,
+                             ApiRateLimiter apiRateLimiter) {
         this.processService = processService;
         this.sessionValidator = sessionValidator;
         this.sessionRateLimiter = sessionRateLimiter;
         this.resumeRedactionService = resumeRedactionService;
         this.extractionPipeline = extractionPipeline;
         this.resumeRules = resumeRules;
+        this.apiRateLimiter = apiRateLimiter;
     }
 
     public ProcessController(ProcessService processService,
                              SessionValidator sessionValidator,
                              SessionRateLimiter sessionRateLimiter) {
-        this(processService, sessionValidator, sessionRateLimiter, null, null, null);
+        this(processService, sessionValidator, sessionRateLimiter, null, null, null, null);
     }
 
     /**
@@ -82,8 +86,11 @@ public class ProcessController {
             @RequestParam(value = "redactPhone", required = false, defaultValue = "true") boolean redactPhone,
             HttpServletRequest request) throws IOException {
 
-        String clientIp = getClientIp(request);
-        if (!sessionRateLimiter.tryAcquire(clientIp)) {
+        String apiKey = request.getHeader("X-API-KEY");
+        if (apiKey == null || apiKey.isBlank()) {
+            apiKey = request.getHeader("x-api-key");
+        }
+        if (apiRateLimiter != null && !apiRateLimiter.tryAcquire(apiKey)) {
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(createErrorBody(429, "Too Many Requests", "Rate limit exceeded. Please wait before retrying."));
@@ -244,8 +251,11 @@ public class ProcessController {
             @RequestParam("ops") String opsJson,
             HttpServletRequest request) throws IOException {
 
-        String clientIp = getClientIp(request);
-        if (!sessionRateLimiter.tryAcquire(clientIp)) {
+        String apiKey = request.getHeader("X-API-KEY");
+        if (apiKey == null || apiKey.isBlank()) {
+            apiKey = request.getHeader("x-api-key");
+        }
+        if (apiRateLimiter != null && !apiRateLimiter.tryAcquire(apiKey)) {
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(createErrorBody(429, "Too Many Requests", "Rate limit exceeded. Please wait before retrying."));
