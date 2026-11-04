@@ -48,3 +48,4 @@ public class ResumeExtractController {
         return ResponseEntity.ok(response);
     }
 }
+

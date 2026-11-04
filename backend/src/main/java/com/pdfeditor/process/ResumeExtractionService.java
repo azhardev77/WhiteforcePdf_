@@ -17,6 +17,7 @@ import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -31,14 +32,14 @@ public class ResumeExtractionService {
 
     private final ExtractionPipeline extractionPipeline;
 
-    // Blacklist words for candidate name heuristic
+    // Strict blacklist for candidate name detection heuristic
     private static final Set<String> BLACKLISTED_NAME_TERMS = Set.of(
             "resume", "curriculum vitae", "cv", "profile", "summary",
             "contact", "contact info", "contact information", "experience",
             "work experience", "education", "skills", "projects", "certifications",
-            "software engineer", "developer", "engineer", "architect", "lead",
-            "manager", "director", "designer", "consultant", "analyst", "intern",
-            "full stack", "frontend", "backend", "data scientist", "student"
+            "software engineer", "backend developer", "full stack developer",
+            "frontend developer", "developer", "data scientist", "architect",
+            "lead", "manager", "director", "designer", "consultant", "analyst", "intern"
     );
 
     // Standard section mappings
@@ -53,37 +54,45 @@ public class ResumeExtractionService {
         SECTION_KEYWORDS.put("CERTIFICATIONS", List.of("certifications", "certificates", "licenses & certifications", "certifications & licenses", "accreditations", "awards & certifications"));
     }
 
-    // Predefined skill taxonomy
-    private static final List<String> SKILL_TAXONOMY = List.of(
-            // Languages with symbols & special characters
-            "C++", "C#", ".NET", "ASP.NET", "Node.js", "Vue.js", "React.js", "Next.js", "AngularJS",
-            "Java", "Python", "JavaScript", "TypeScript", "Golang", "Go", "Rust", "Ruby", "PHP",
-            "Swift", "Kotlin", "Scala", "R", "SQL", "PL/SQL", "HTML", "HTML5", "CSS", "CSS3", "Sass", "SCSS",
-
-            // Frameworks & Libraries
-            "Spring Boot", "Spring MVC", "Spring", "Hibernate", "React", "Vue", "Angular", "Express.js", "Express",
-            "Django", "Flask", "FastAPI", "Ruby on Rails", "Laravel", "Tailwind CSS", "Bootstrap",
-
-            // Databases & Cache
-            "PostgreSQL", "MySQL", "MongoDB", "Redis", "Elasticsearch", "Oracle", "Cassandra",
-            "SQLite", "DynamoDB", "MariaDB", "Neo4j",
-
-            // Cloud, DevOps & Tools
-            "Docker", "Kubernetes", "AWS", "Amazon Web Services", "Azure", "GCP", "Google Cloud",
-            "Git", "GitHub", "GitLab", "CI/CD", "Jenkins", "Terraform", "Ansible", "Linux",
-            "Kafka", "RabbitMQ", "GraphQL", "REST API", "Microservices",
-
-            // AI / ML / Data
-            "TensorFlow", "PyTorch", "Scikit-Learn", "Pandas", "NumPy", "Apache Spark", "Hadoop"
+    // Tier 1: Unambiguous skills (Case-Insensitive matching)
+    private static final List<String> UNAMBIGUOUS_SKILLS = List.of(
+            "spring boot", "postgresql", "mysql", "mongodb", "docker", "kubernetes",
+            "typescript", "vue.js", "node.js", "aws", "gcp", "redis", "elasticsearch", "kafka",
+            "python", "golang", "kotlin", "swift", "scala", "php", "ruby", "html", "html5",
+            "css", "css3", "sass", "scss", "sql", "pl/sql", ".net", "asp.net", "django",
+            "flask", "fastapi", "laravel", "tailwind css", "bootstrap", "hibernate",
+            "express.js", "graphql", "rest api", "microservices", "ci/cd", "jenkins",
+            "terraform", "ansible", "linux", "azure", "git", "github", "gitlab",
+            "tensorflow", "pytorch", "pandas", "numpy", "apache spark", "hadoop"
     );
 
-    private static final Map<String, Pattern> SKILL_PATTERNS = new LinkedHashMap<>();
+    // Tier 2: Case-sensitive skills (Collides with common English words / verbs)
+    private static final Map<String, String> CASE_SENSITIVE_SKILLS_MAP = Map.of(
+            "Spring", "(?<![a-zA-Z0-9+#.-])Spring(?!\\s+(?:Boot|MVC|Batch))(?![a-zA-Z0-9+#.-])",
+            "React", "(?<![a-zA-Z0-9+#.-])React(?!\\.js|\\s+Native)(?![a-zA-Z0-9+#.-])",
+            "Express", "(?<![a-zA-Z0-9+#.-])Express(?!\\.js)(?![a-zA-Z0-9+#.-])",
+            "Java", "(?<![a-zA-Z0-9+#.-])Java(?![a-zA-Z0-9+#.-])",
+            "Go", "(?<![a-zA-Z0-9+#.-])Go(?![a-zA-Z0-9+#.-])",
+            "Rust", "(?<![a-zA-Z0-9+#.-])Rust(?![a-zA-Z0-9+#.-])",
+            "C++", "(?<![a-zA-Z0-9+#.-])\\QC++\\E(?![a-zA-Z0-9+#.-])",
+            "C#", "(?<![a-zA-Z0-9+#.-])\\QC#\\E(?![a-zA-Z0-9+#.-])"
+    );
+
+    private static final Map<String, Pattern> UNAMBIGUOUS_SKILL_PATTERNS = new LinkedHashMap<>();
+    private static final Map<String, Pattern> CASE_SENSITIVE_SKILL_PATTERNS = new LinkedHashMap<>();
+
+    // Single-letter language safety regex
+    private static final Pattern C_LANGUAGE_PATTERN = Pattern.compile("(?i)(?:\\bC\\s*/\\s*C\\+\\+|\\bC\\s+(?:Language|Programming)\\b)");
+    private static final Pattern R_LANGUAGE_PATTERN = Pattern.compile("(?i)(?:\\bR\\s+(?:Language|Programming)\\b|\\bR\\s*/\\s*Python\\b|\\bPython\\s*/\\s*R\\b)");
+
     static {
-        for (String skill : SKILL_TAXONOMY) {
-            boolean caseSensitive = "Go".equals(skill) || "R".equals(skill);
+        for (String skill : UNAMBIGUOUS_SKILLS) {
             String regex = "(?<![a-zA-Z0-9+#.-])" + Pattern.quote(skill) + "(?![a-zA-Z0-9+#.-])";
-            Pattern pattern = Pattern.compile(regex, caseSensitive ? 0 : Pattern.CASE_INSENSITIVE);
-            SKILL_PATTERNS.put(skill, pattern);
+            UNAMBIGUOUS_SKILL_PATTERNS.put(skill, Pattern.compile(regex, Pattern.CASE_INSENSITIVE));
+        }
+
+        for (Map.Entry<String, String> entry : CASE_SENSITIVE_SKILLS_MAP.entrySet()) {
+            CASE_SENSITIVE_SKILL_PATTERNS.put(entry.getKey(), Pattern.compile(entry.getValue())); // Strict case
         }
     }
 
@@ -94,28 +103,28 @@ public class ResumeExtractionService {
     }
 
     /**
-     * Executes single-pass resume parsing and data extraction.
+     * Executes single-pass resume parsing and structured data extraction.
      */
     public ResumeExtractResponse extract(byte[] pdfBytes, String filename) {
         if (pdfBytes == null || pdfBytes.length == 0) {
-            throw new ResumeParsingException("PDF bytes cannot be empty", 400);
+            throw new ResumeParsingException(HttpStatus.BAD_REQUEST, "PDF bytes cannot be empty");
         }
         String safeFilename = (filename != null && !filename.isBlank()) ? filename : "resume.pdf";
 
         try (PDDocument document = Loader.loadPDF(pdfBytes)) {
             if (document.isEncrypted()) {
-                throw new ResumeParsingException("Password-protected or encrypted PDFs are not supported", 422);
+                throw new ResumeParsingException(HttpStatus.UNPROCESSABLE_ENTITY, "Password-protected or encrypted PDFs are not supported");
             }
 
             int pageCount = document.getNumberOfPages();
             if (pageCount == 0) {
-                throw new ResumeParsingException("PDF document has no pages", 422);
+                throw new ResumeParsingException(HttpStatus.UNPROCESSABLE_ENTITY, "PDF document has no pages");
             }
 
-            // 1. Single pass: Extract clickable links during PDDocument traversal
+            // 1. Single pass: Extract clickable hyperlinks from PDAnnotationLink during document traversal
             List<String> annotationLinks = extractClickableLinks(document);
 
-            // 2. Single pass: Reuse loaded PDDocument to build spatial DocumentModel
+            // 2. Single pass: Reuse loaded PDDocument to build spatial DocumentModel without re-reading bytes
             DocumentModel docModel = extractionPipeline.extractDocument(document, UUID.randomUUID().toString(), safeFilename);
 
             // 3. Name heuristic: Search restricted to Page 1, top 25% height, prominent font, blacklist filtered
@@ -124,7 +133,7 @@ public class ResumeExtractionService {
                 candidateName = extractCandidateName(docModel.getPages().get(0));
             }
 
-            // 4. Section segmentation engine
+            // 4. Column-aware block sorting & section segmentation
             Map<String, List<String>> sections = segmentSections(docModel);
 
             // 5. Extract full text from spatial layout for NLP & contact parsing
@@ -133,7 +142,7 @@ public class ResumeExtractionService {
             // 6. Contact extraction reusing PiiDetector & link matching
             ResumeExtractResponse.ContactInfo contact = extractContactInfo(fullText, annotationLinks);
 
-            // 7. Symbol-safe technical skill detection
+            // 7. Dual-tier symbol-safe technical skill detection
             List<String> skills = extractSkills(fullText, sections);
 
             // 8. Accurate metadata calculation
@@ -149,13 +158,100 @@ public class ResumeExtractionService {
             );
         } catch (InvalidPasswordException e) {
             log.warn("Resume parsing rejected: encrypted/password-protected PDF");
-            throw new ResumeParsingException("Password-protected or encrypted PDFs are not supported", e, 422);
+            throw new ResumeParsingException(HttpStatus.UNPROCESSABLE_ENTITY, "Password-protected or encrypted PDFs are not supported", e);
         } catch (ResumeParsingException e) {
             throw e;
         } catch (IOException e) {
             log.error("Failed to parse resume PDF: {}", e.getMessage(), e);
-            throw new ResumeParsingException("Failed to parse resume PDF: " + e.getMessage(), e, 422);
+            throw new ResumeParsingException(HttpStatus.UNPROCESSABLE_ENTITY, "Failed to parse resume PDF: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Solves the multi-column interleaving problem by sorting blocks into reading order:
+     * Full-Width Header Blocks -> Left Column Blocks -> Right Column Blocks.
+     */
+    public List<Block> sortBlocksByReadingOrder(List<Block> blocks, double pageWidth) {
+        if (blocks == null || blocks.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<Block> flatBlocks = unpackContainerBlocks(blocks);
+
+        double midX = pageWidth > 0 ? pageWidth / 2.0 : 300.0;
+        double tolerance = pageWidth > 0 ? pageWidth * 0.05 : 30.0;
+
+        List<Block> fullWidthBlocks = new ArrayList<>();
+        List<Block> leftColumnBlocks = new ArrayList<>();
+        List<Block> rightColumnBlocks = new ArrayList<>();
+
+        for (Block block : flatBlocks) {
+            if (block == null) continue;
+            double[] bbox = block.getBbox();
+            if (bbox == null || bbox.length < 4) {
+                fullWidthBlocks.add(block);
+                continue;
+            }
+
+            double leftX = bbox[0];
+            double width = bbox[2];
+            double rightX = leftX + width;
+            double blockWidth = width;
+            if (bbox[2] > leftX && bbox[2] <= pageWidth && (bbox[2] - leftX) > blockWidth) {
+                blockWidth = bbox[2] - leftX;
+            }
+
+            if (pageWidth > 0 && blockWidth > pageWidth * 0.70) {
+                fullWidthBlocks.add(block);
+            } else if (rightX <= midX + tolerance) {
+                leftColumnBlocks.add(block);
+            } else if (leftX >= midX - tolerance) {
+                rightColumnBlocks.add(block);
+            } else {
+                double centerX = leftX + (width / 2.0);
+                if (centerX < midX) {
+                    leftColumnBlocks.add(block);
+                } else {
+                    rightColumnBlocks.add(block);
+                }
+            }
+        }
+
+        Comparator<Block> byY = Comparator.comparingDouble(b ->
+                (b.getBbox() != null && b.getBbox().length > 1) ? b.getBbox()[1] : 0.0
+        );
+        fullWidthBlocks.sort(byY);
+        leftColumnBlocks.sort(byY);
+        rightColumnBlocks.sort(byY);
+
+        List<Block> sorted = new ArrayList<>(fullWidthBlocks.size() + leftColumnBlocks.size() + rightColumnBlocks.size());
+        sorted.addAll(fullWidthBlocks);
+        sorted.addAll(leftColumnBlocks);
+        sorted.addAll(rightColumnBlocks);
+
+        return sorted;
+    }
+
+    private List<Block> unpackContainerBlocks(List<Block> blocks) {
+        List<Block> result = new ArrayList<>();
+        for (Block b : blocks) {
+            if (b instanceof TableBlock tb) {
+                if (tb.getCells() != null) {
+                    for (List<ParagraphBlock> row : tb.getCells()) {
+                        if (row != null) {
+                            for (ParagraphBlock cell : row) {
+                                if (cell != null) {
+                                    result.add(cell);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                result.add(b);
+            }
+        }
+        return result;
     }
 
     private List<String> extractClickableLinks(PDDocument document) {
@@ -209,7 +305,7 @@ public class ResumeExtractionService {
             double y = (bbox != null && bbox.length > 1) ? bbox[1] : 0.0;
 
             if (y > topThreshold) {
-                continue; // Restrict search to top 25% of page 1
+                continue; // Restrict search strictly to top 25% of Page 1
             }
 
             String blockText = getBlockText(block);
@@ -244,16 +340,16 @@ public class ResumeExtractionService {
         }
 
         if (text.matches(".*\\d.*")) {
-            return false; // Names do not contain numbers
+            return false; // Exclude numbers
         }
 
-        if (text.contains("@") || text.contains("www.") || text.contains("http") ||
+        if (text.contains("@") || text.contains("http") || text.contains("www.") ||
                 text.contains("github") || text.contains("linkedin")) {
             return false; // Exclude email/URL strings
         }
 
-        if (text.matches(".*[|•:;\\\\/_=<>+*?%^$#@!~].*")) {
-            return false; // Exclude symbols and delimiters
+        if (text.matches(".*[+()|/:;\\\\_=<>&*~•].*")) {
+            return false; // Exclude phone punctuation & delimiters
         }
 
         if (!text.matches("^[\\p{L}\\s.'-]+$")) {
@@ -289,10 +385,13 @@ public class ResumeExtractionService {
         }
 
         for (PageModel page : docModel.getPages()) {
-            List<Block> blocks = page.getBlocks();
-            if (blocks == null) continue;
+            List<Block> rawBlocks = page.getBlocks();
+            if (rawBlocks == null) continue;
 
-            for (Block block : blocks) {
+            // Sort blocks column-aware to avoid section bleed between columns
+            List<Block> sortedBlocks = sortBlocksByReadingOrder(rawBlocks, page.getWidth());
+
+            for (Block block : sortedBlocks) {
                 List<String> blockTexts = getAtomicTexts(block);
 
                 for (String textChunk : blockTexts) {
@@ -387,19 +486,96 @@ public class ResumeExtractionService {
             }
         }
         String skillsSectionText = skillsSectionBuilder.toString();
+        String combinedText = skillsSectionText + "\n" + (fullText != null ? fullText : "");
 
-        for (Map.Entry<String, Pattern> entry : SKILL_PATTERNS.entrySet()) {
+        // 1. Tier 1: Unambiguous skills (Case-Insensitive)
+        for (Map.Entry<String, Pattern> entry : UNAMBIGUOUS_SKILL_PATTERNS.entrySet()) {
             String skill = entry.getKey();
             Pattern pattern = entry.getValue();
+            if (pattern.matcher(combinedText).find()) {
+                detected.add(canonicalizeSkill(skill));
+            }
+        }
 
-            if (!skillsSectionText.isBlank() && pattern.matcher(skillsSectionText).find()) {
-                detected.add(skill);
-            } else if (fullText != null && pattern.matcher(fullText).find()) {
+        // 2. Tier 2: Case-sensitive skills (Exact case required)
+        for (Map.Entry<String, Pattern> entry : CASE_SENSITIVE_SKILL_PATTERNS.entrySet()) {
+            String skill = entry.getKey();
+            if ("Spring".equals(skill) && detected.contains("Spring Boot")) {
+                continue; // Do not emit redundant Spring if Spring Boot was already captured
+            }
+            if ("React".equals(skill) && detected.contains("React.js")) {
+                continue;
+            }
+            Pattern pattern = entry.getValue();
+            if (pattern.matcher(combinedText).find()) {
                 detected.add(skill);
             }
         }
 
+        // 3. Single-letter language safety: Standalone "C" and "R"
+        if (C_LANGUAGE_PATTERN.matcher(combinedText).find()) {
+            detected.add("C");
+        }
+        if (R_LANGUAGE_PATTERN.matcher(combinedText).find()) {
+            detected.add("R");
+        }
+
         return new ArrayList<>(detected);
+    }
+
+    private String canonicalizeSkill(String skill) {
+        if ("spring boot".equalsIgnoreCase(skill)) return "Spring Boot";
+        if ("postgresql".equalsIgnoreCase(skill)) return "PostgreSQL";
+        if ("mysql".equalsIgnoreCase(skill)) return "MySQL";
+        if ("mongodb".equalsIgnoreCase(skill)) return "MongoDB";
+        if ("docker".equalsIgnoreCase(skill)) return "Docker";
+        if ("kubernetes".equalsIgnoreCase(skill)) return "Kubernetes";
+        if ("typescript".equalsIgnoreCase(skill)) return "TypeScript";
+        if ("vue.js".equalsIgnoreCase(skill)) return "Vue.js";
+        if ("node.js".equalsIgnoreCase(skill)) return "Node.js";
+        if ("aws".equalsIgnoreCase(skill)) return "AWS";
+        if ("gcp".equalsIgnoreCase(skill)) return "GCP";
+        if ("redis".equalsIgnoreCase(skill)) return "Redis";
+        if ("elasticsearch".equalsIgnoreCase(skill)) return "Elasticsearch";
+        if ("kafka".equalsIgnoreCase(skill)) return "Kafka";
+        if ("python".equalsIgnoreCase(skill)) return "Python";
+        if ("golang".equalsIgnoreCase(skill)) return "Golang";
+        if ("kotlin".equalsIgnoreCase(skill)) return "Kotlin";
+        if ("swift".equalsIgnoreCase(skill)) return "Swift";
+        if ("scala".equalsIgnoreCase(skill)) return "Scala";
+        if ("php".equalsIgnoreCase(skill)) return "PHP";
+        if ("ruby".equalsIgnoreCase(skill)) return "Ruby";
+        if ("html".equalsIgnoreCase(skill) || "html5".equalsIgnoreCase(skill)) return "HTML";
+        if ("css".equalsIgnoreCase(skill) || "css3".equalsIgnoreCase(skill)) return "CSS";
+        if ("sql".equalsIgnoreCase(skill)) return "SQL";
+        if (".net".equalsIgnoreCase(skill)) return ".NET";
+        if ("asp.net".equalsIgnoreCase(skill)) return "ASP.NET";
+        if ("django".equalsIgnoreCase(skill)) return "Django";
+        if ("flask".equalsIgnoreCase(skill)) return "Flask";
+        if ("fastapi".equalsIgnoreCase(skill)) return "FastAPI";
+        if ("laravel".equalsIgnoreCase(skill)) return "Laravel";
+        if ("tailwind css".equalsIgnoreCase(skill)) return "Tailwind CSS";
+        if ("bootstrap".equalsIgnoreCase(skill)) return "Bootstrap";
+        if ("hibernate".equalsIgnoreCase(skill)) return "Hibernate";
+        if ("graphql".equalsIgnoreCase(skill)) return "GraphQL";
+        if ("rest api".equalsIgnoreCase(skill)) return "REST API";
+        if ("microservices".equalsIgnoreCase(skill)) return "Microservices";
+        if ("ci/cd".equalsIgnoreCase(skill)) return "CI/CD";
+        if ("jenkins".equalsIgnoreCase(skill)) return "Jenkins";
+        if ("terraform".equalsIgnoreCase(skill)) return "Terraform";
+        if ("ansible".equalsIgnoreCase(skill)) return "Ansible";
+        if ("linux".equalsIgnoreCase(skill)) return "Linux";
+        if ("azure".equalsIgnoreCase(skill)) return "Azure";
+        if ("git".equalsIgnoreCase(skill)) return "Git";
+        if ("github".equalsIgnoreCase(skill)) return "GitHub";
+        if ("gitlab".equalsIgnoreCase(skill)) return "GitLab";
+        if ("tensorflow".equalsIgnoreCase(skill)) return "TensorFlow";
+        if ("pytorch".equalsIgnoreCase(skill)) return "PyTorch";
+        if ("pandas".equalsIgnoreCase(skill)) return "Pandas";
+        if ("numpy".equalsIgnoreCase(skill)) return "NumPy";
+        if ("apache spark".equalsIgnoreCase(skill)) return "Apache Spark";
+        if ("hadoop".equalsIgnoreCase(skill)) return "Hadoop";
+        return skill;
     }
 
     private ResumeExtractResponse.ContactInfo extractContactInfo(String fullText, List<String> annotationLinks) {

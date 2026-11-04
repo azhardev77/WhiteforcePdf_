@@ -1,28 +1,42 @@
 package com.pdfeditor.process.exception;
 
+import org.springframework.http.HttpStatus;
+
 public class ResumeParsingException extends RuntimeException {
 
-    private final int statusCode;
+    private final HttpStatus status;
+
+    public ResumeParsingException(HttpStatus status, String message) {
+        super(message);
+        this.status = status != null ? status : HttpStatus.BAD_REQUEST;
+    }
+
+    public ResumeParsingException(HttpStatus status, String message, Throwable cause) {
+        super(message, cause);
+        this.status = status != null ? status : HttpStatus.INTERNAL_SERVER_ERROR;
+    }
 
     public ResumeParsingException(String message) {
-        this(message, 400);
+        this(HttpStatus.BAD_REQUEST, message);
     }
 
     public ResumeParsingException(String message, int statusCode) {
-        super(message);
-        this.statusCode = statusCode;
+        this(HttpStatus.valueOf(statusCode), message);
     }
 
     public ResumeParsingException(String message, Throwable cause) {
-        this(message, cause, 500);
+        this(HttpStatus.INTERNAL_SERVER_ERROR, message, cause);
     }
 
     public ResumeParsingException(String message, Throwable cause, int statusCode) {
-        super(message, cause);
-        this.statusCode = statusCode;
+        this(HttpStatus.valueOf(statusCode), message, cause);
+    }
+
+    public HttpStatus getStatus() {
+        return status;
     }
 
     public int getStatusCode() {
-        return statusCode;
+        return status.value();
     }
 }

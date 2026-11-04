@@ -38,7 +38,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {
         "pdfeditor.security.api-key=test_b2b_secret_key_2026",
         "app.security.api-key=test_b2b_secret_key_2026",
-        "app.security.header-name=X-API-KEY"
+        "app.security.header-name=X-API-KEY",
+        "pdfeditor.max-file-size-bytes=10485760"
 })
 class ResumeExtractControllerTest {
 
@@ -225,6 +226,47 @@ class ResumeExtractControllerTest {
         return baos.toByteArray();
     }
 
+    private byte[] createDualTierSkillTestPdf() throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            doc.addPage(page);
+
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 20);
+                cs.newLineAtOffset(50, 770);
+                cs.showText("Robert California");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 11);
+                cs.newLineAtOffset(50, 730);
+                // Deliberate lowercase english words: "react quickly", "spring internship", "go to work", "c) Task", "r) Report"
+                cs.showText("We had to react quickly to market conditions during my spring internship.");
+                cs.newLineAtOffset(0, -18);
+                cs.showText("I used to go to meetings and check c) Task and r) Report.");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 14);
+                cs.newLineAtOffset(50, 670);
+                cs.showText("SKILLS");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 11);
+                cs.newLineAtOffset(50, 650);
+                // Explicit C / C++ and R Language, plus Spring Boot
+                cs.showText("Technologies: C / C++, R Language, Spring Boot, Java, PostgreSQL");
+                cs.endText();
+            }
+
+            doc.save(baos);
+        }
+        return baos.toByteArray();
+    }
+
     private byte[] createEncryptedPdf() throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try (PDDocument doc = new PDDocument()) {
@@ -291,7 +333,7 @@ class ResumeExtractControllerTest {
     }
 
     @Test
-    @DisplayName("Extract two-column resume PDF correctly parses name, skills, and sections")
+    @DisplayName("Extract two-column resume PDF correctly parses name, skills, and sections without bleed")
     void testExtractTwoColumnResume() throws Exception {
         byte[] pdfBytes = createTwoColumnResumePdf();
         MockMultipartFile file = new MockMultipartFile(
@@ -312,6 +354,37 @@ class ResumeExtractControllerTest {
         assertThat(response.contact().emails()).contains("michael@dundermifflin.com");
         assertThat(response.skills()).contains("Python", "Django", "AWS", "Git");
         assertThat(response.sections()).containsKeys("WORK HISTORY", "SKILLS", "EDUCATION");
+        assertThat(response.sections().get("WORK HISTORY")).anyMatch(s -> s.contains("Regional Manager"));
+        assertThat(response.sections().get("EDUCATION")).anyMatch(s -> s.contains("Scranton High School"));
+    }
+
+    @Test
+    @DisplayName("Dual-tier skill matching prevents false positives from verbs and bullets")
+    void testDualTierSkillSafetyAndFalsePositives() throws Exception {
+        byte[] pdfBytes = createDualTierSkillTestPdf();
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "robert_california_resume.pdf", MediaType.APPLICATION_PDF_VALUE, pdfBytes
+        );
+
+        MvcResult result = mockMvc.perform(multipart("/api/v1/resume/extract")
+                        .file(file)
+                        .header("X-API-KEY", VALID_API_KEY))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        ResumeExtractResponse response = objectMapper.readValue(
+                result.getResponse().getContentAsString(), ResumeExtractResponse.class
+        );
+
+        List<String> skills = response.skills();
+
+        // Legitimate technical skills must be present
+        assertThat(skills).contains("Spring Boot", "Java", "PostgreSQL", "C", "R");
+
+        // English verbs/bullets MUST NOT be falsely triggered
+        assertThat(skills).doesNotContain("React"); // "react quickly" should not match
+        assertThat(skills).doesNotContain("Spring"); // "spring internship" should not match (only Spring Boot)
+        assertThat(skills).doesNotContain("Go");     // "go to meetings" should not match
     }
 
     @Test
@@ -342,6 +415,28 @@ class ResumeExtractControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.message").value("Invalid file format: missing '%PDF-' header"));
+    }
+
+    @Test
+    @DisplayName("File size exceeding 10MB returns 413 Payload Too Large")
+    void testExtractFileSizeExceedingLimitReturns413() throws Exception {
+        // Create 11MB file
+        byte[] oversizedBytes = new byte[11 * 1024 * 1024];
+        oversizedBytes[0] = 0x25; // %
+        oversizedBytes[1] = 0x50; // P
+        oversizedBytes[2] = 0x44; // D
+        oversizedBytes[3] = 0x46; // F
+        oversizedBytes[4] = 0x2D; // -
+
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "huge.pdf", MediaType.APPLICATION_PDF_VALUE, oversizedBytes
+        );
+
+        mockMvc.perform(multipart("/api/v1/resume/extract")
+                        .file(file)
+                        .header("X-API-KEY", VALID_API_KEY))
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(jsonPath("$.status").value(413));
     }
 
     @Test
