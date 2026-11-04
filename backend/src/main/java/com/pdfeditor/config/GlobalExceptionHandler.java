@@ -1,5 +1,6 @@
 package com.pdfeditor.config;
 
+import com.pdfeditor.process.exception.ResumeParsingException;
 import com.pdfeditor.session.SessionValidationException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -18,6 +19,17 @@ import java.util.Map;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    @ExceptionHandler(ResumeParsingException.class)
+    public ResponseEntity<Map<String, Object>> handleResumeParsingException(ResumeParsingException ex, HttpServletRequest request) {
+        String errorName = switch (ex.getStatusCode()) {
+            case 413 -> "Payload Too Large";
+            case 422 -> "Unprocessable Entity";
+            case 500 -> "Internal Server Error";
+            default -> "Bad Request";
+        };
+        return buildResponse(ex.getStatusCode(), errorName, ex.getMessage(), request);
+    }
 
     @ExceptionHandler(SessionValidationException.class)
     public ResponseEntity<Map<String, Object>> handleSessionValidationException(SessionValidationException ex, HttpServletRequest request) {
