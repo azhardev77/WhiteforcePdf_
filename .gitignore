@@ -29,3 +29,12 @@ tender_redacted_export.pdf
 
 postman/
 .postman/
+
+# Local AI state & scratch verification outputs
+.gemini/
+/api_output.json
+/r.json
+/check.py
+/clean.pdf
+/clean_resume_output.pdf
+/redacted_resume_test.pdf
