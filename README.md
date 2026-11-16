@@ -1,15 +1,15 @@
-# PDF Visual Studio — Pixel-Perfect Live Document & Redaction Editor
+# Whiteforce PDF Visual Studio & Enterprise Resume Redaction Engine
 
 <p align="center">
-  <img src="docs/images/blank_lines_edited_verified.png" alt="PDF Visual Studio Banner" width="920"/>
+  <img src="docs/images/blank_lines_edited_verified.png" alt="Whiteforce PDF Visual Studio Banner" width="920"/>
 </p>
 
 <p align="center">
-  <strong>A modern, pixel-perfect PDF document editor and visual redaction studio with WPS Office-style live paragraph editing, real-time vertical canvas reflow, and intelligent horizontal blank line detection.</strong>
+  <strong>A modern, pixel-perfect PDF document editor, visual redaction studio, and enterprise B2B Resume PII Redaction & Metadata Extraction API with WPS Office-style live paragraph editing, vertical canvas reflow, and intelligent contact scrubbing.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/azhardev77/Pdfsss/actions"><img src="https://img.shields.io/badge/Build-Passing-emerald?style=flat-square&logo=githubactions" alt="Build Status"/></a>
+  <a href="https://github.com/azhardev77/WhiteforcePdf_/actions"><img src="https://img.shields.io/badge/Build-Passing-emerald?style=flat-square&logo=githubactions" alt="Build Status"/></a>
   <a href="https://www.oracle.com/java/technologies/javase/jdk21-archive-downloads.html"><img src="https://img.shields.io/badge/Java-21%20LTS-orange?style=flat-square&logo=openjdk" alt="Java 21"/></a>
   <a href="https://spring.io/projects/spring-boot"><img src="https://img.shields.io/badge/Spring%20Boot-3.3.4-brightgreen?style=flat-square&logo=springboot" alt="Spring Boot 3.3.4"/></a>
   <a href="https://pdfbox.apache.org/"><img src="https://img.shields.io/badge/Apache%20PDFBox-3.0.3-red?style=flat-square" alt="Apache PDFBox"/></a>
@@ -18,6 +18,15 @@
   <a href="https://playwright.dev/"><img src="https://img.shields.io/badge/E2E%20Tests-Playwright-green?style=flat-square&logo=playwright" alt="Playwright"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License"/></a>
 </p>
+
+---
+
+## 🚀 Enterprise Resume PII Redaction & Metadata Extraction API
+For external systems (e.g. Laravel ATS / HRMS portals) integrating with the automated Resume Redaction API:
+👉 **[Read the Full Integration Guide (RESUME_REDACTION_API_INTEGRATION_GUIDE.md)](./RESUME_REDACTION_API_INTEGRATION_GUIDE.md)**
+- **Endpoints:** `POST /api/v1/resume/process`, `POST /api/v1/resume/extract`, `GET /api/health`
+- **Supported Formats:** Single PDF, Multi-PDF batch arrays (`files`), Bulk ZIP archives (`file`)
+- **Automated Redaction:** Removes candidate emails, phone numbers, contact icons, and links while preserving surrounding text.
 
 ---
 
