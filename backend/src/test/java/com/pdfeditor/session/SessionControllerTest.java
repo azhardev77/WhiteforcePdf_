@@ -37,7 +37,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(controllers = SessionController.class)
-@Import({SecurityConfig.class, CorsConfig.class, SessionService.class, SessionValidator.class, SessionRateLimiter.class, SessionProperties.class, RedactionCategoryRegistry.class})
+@Import({com.pdfeditor.config.GlobalExceptionHandler.class, SecurityConfig.class, CorsConfig.class, SessionService.class, SessionValidator.class, SessionRateLimiter.class, SessionProperties.class, RedactionCategoryRegistry.class})
 @TestPropertySource(properties = {
         "app.security.api-key=test_secret_api_key_xyz",
         "app.security.header-name=X-API-KEY",

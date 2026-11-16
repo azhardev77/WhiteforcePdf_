@@ -13,21 +13,21 @@ import java.util.regex.Pattern;
  */
 public class PiiDetector {
 
-    public static final String ICON_PREFIX_PATTERN = "(?:[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}✉☎✆📞📧📱📍]\\s*)?";
+    public static final String ICON_PREFIX_PATTERN = "(?:[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}✉☎✆📞📧📱📍][\\s\\h]*)?";
 
     public static final String EMAIL_PATTERN_STR = "(?:" + ICON_PREFIX_PATTERN + ")[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}";
-    public static final String PHONE_PATTERN_STR = "(?:" + ICON_PREFIX_PATTERN + ")(?:\\+?\\d{1,3}[\\s-]?)?(?:\\(?\\d{2,5}\\)?[\\s-]?)?\\d{3,5}[\\s-]?\\d{4,6}";
+    public static final String PHONE_PATTERN_STR = "(?:" + ICON_PREFIX_PATTERN + ")(?:\\+?\\d{1,3}[\\s\\h-]?)?(?:\\(?\\d{2,5}\\)?[\\s\\h-]?)?\\d{3,5}[\\s\\h-]?\\d{4,6}";
 
     public static final Pattern EMAIL_REGEX = Pattern.compile(EMAIL_PATTERN_STR);
     public static final Pattern PHONE_REGEX = Pattern.compile(PHONE_PATTERN_STR);
 
-    private static final Pattern MONTH_PREFIX_REGEX = Pattern.compile("(?i)(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\s*$");
-    private static final Pattern DATE_SUFFIX_REGEX = Pattern.compile("(?i)^\\s*[-–—]\\s*(?:present|current|now|till\\s*date)");
-    private static final Pattern YEAR_RANGE_REGEX = Pattern.compile("^(?:19|20)\\d{2}\\s*[-–—/]\\s*(?:19|20)\\d{2}$");
+    private static final Pattern MONTH_PREFIX_REGEX = Pattern.compile("(?i)(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[\\s\\h]*$");
+    private static final Pattern DATE_SUFFIX_REGEX = Pattern.compile("(?i)^[\\s\\h]*[-–—][\\s\\h]*(?:present|current|now|till[\\s\\h]*date)");
+    private static final Pattern YEAR_RANGE_REGEX = Pattern.compile("^(?:19|20)\\d{2}[\\s\\h]*[-–—/][\\s\\h]*(?:19|20)\\d{2}$");
     private static final Pattern STANDALONE_YEAR_REGEX = Pattern.compile("^(?:19|20)\\d{2}$");
 
-    private static final Pattern EMAIL_LABEL_REGEX = Pattern.compile("(?i)(?:(?:email|e-mail|fa-envelope|fa-envelope-o|envelope)\\s*[:.-]?\\s*|[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}\\u260E\\u2709\\uF095\\uF0E0✉☎✆📞📧📱📍]\\s*)+$");
-    private static final Pattern PHONE_LABEL_REGEX = Pattern.compile("(?i)(?:(?:phone|tel|telephone|mobile|mob|cell|call|contact|fa-phone|fa-mobile)\\s*[:.-]?\\s*|[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}\\u260E\\u2709\\uF095\\uF0E0✉☎✆📞📧📱📍]\\s*)+$");
+    private static final Pattern EMAIL_LABEL_REGEX = Pattern.compile("(?i)(?:(?:email|e-mail|fa-envelope|fa-envelope-o|envelope)[\\s\\h]*[:.-]?[\\s\\h]*|[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}\\u260E\\u2709\\uF095\\uF0E0✉☎✆📞📧📱📍][\\s\\h]*)+$");
+    private static final Pattern PHONE_LABEL_REGEX = Pattern.compile("(?i)(?:(?:phone|tel|telephone|mobile|mob|cell|call|contact|fa-phone|fa-mobile)[\\s\\h]*[:.-]?[\\s\\h]*|[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}\\u260E\\u2709\\uF095\\uF0E0✉☎✆📞📧📱📍][\\s\\h]*)+$");
 
     public static class PiiSpan {
         private int start;

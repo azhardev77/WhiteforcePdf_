@@ -18,7 +18,7 @@ public class SecurityConfig {
     @Value("${app.security.api-key:${pdfeditor.security.api-key:${API_KEY:}}}")
     private String apiKey;
 
-    @Value("${app.security.ui-api-key:}")
+    @Value("${app.security.ui-api-key:${UI_API_KEY:}}")
     private String uiApiKey;
 
     @Value("${app.security.header-name:X-API-KEY}")
@@ -30,7 +30,7 @@ public class SecurityConfig {
             throw new IllegalStateException("API_KEY environment variable is required but not set. Please set the API_KEY environment variable before starting the application.");
         }
         if (uiApiKey == null || uiApiKey.trim().isEmpty()) {
-            log.warn("UI_API_KEY is not set");
+            log.warn("UI_API_KEY is not set. UI endpoints will reject all requests.");
         } else if (uiApiKey.trim().equals(apiKey.trim())) {
             throw new IllegalStateException("UI_API_KEY must not be equal to API_KEY.");
         }
@@ -38,7 +38,7 @@ public class SecurityConfig {
 
     @Bean
     public ApiKeyAuthFilter apiKeyAuthFilter(ObjectMapper objectMapper) {
-        String effectiveUiKey = (uiApiKey != null && !uiApiKey.trim().isEmpty()) ? uiApiKey : apiKey;
+        String effectiveUiKey = (uiApiKey != null) ? uiApiKey.trim() : "";
         return new ApiKeyAuthFilter(apiKey, effectiveUiKey, headerName, objectMapper);
     }
 

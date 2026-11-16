@@ -848,6 +848,25 @@ public class ResumeRedactionService {
             "\u260E", "\u2709", "\uF095", "\uF0E0", "fa-phone", "fa-envelope", "fa-envelope-o", "fa-mobile", "✉", "☎", "✆", "📞", "📧", "📱"
     };
 
+    private static final java.util.regex.Pattern CONTACT_LABEL_PATTERN = java.util.regex.Pattern.compile(
+            "(?i)^\\s*(?:[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}\\u260E\\u2709\\uF095\\uF0E0✉☎✆📞📧📱📍]\\s*)+(?:(?:phone|tel|telephone|mobile|mob|cell|call|contact|email|e-mail|fa-phone|fa-mobile|fa-envelope|envelope)\\s*[:.-]?\\s*)?$" +
+            "|(?i)^\\s*(?:phone|tel|telephone|mobile|mob|cell|call|contact|email|e-mail|fa-phone|fa-mobile|fa-envelope|envelope)\\s*[:.-]?\\s*$"
+    );
+
+    private boolean isContactIconToken(String text) {
+        if (text == null || text.isBlank()) return false;
+        for (String iconToken : CONTACT_ICON_TOKENS) {
+            if (text.contains(iconToken)) return true;
+        }
+        return false;
+    }
+
+    private boolean isContactLabelOrIcon(String text) {
+        if (text == null || text.isBlank()) return false;
+        if (isContactIconToken(text)) return true;
+        return CONTACT_LABEL_PATTERN.matcher(text.trim()).matches();
+    }
+
     private double calculateMaxPrecedingTextRight(DocumentModel docModel, List<Glyph> glyphs, int pageNumber,
                                                   double targetX, double targetY, double targetH) {
         double maxRight = 0.0;
@@ -859,6 +878,7 @@ public class ResumeRedactionService {
             for (Glyph charGlyph : glyphs) {
                 String text = charGlyph.getText();
                 if (text == null || text.isBlank()) continue;
+                if (isContactIconToken(text)) continue;
 
                 double charTop = charGlyph.getY();
                 double charBottom = charGlyph.getY() + charGlyph.getHeight();
@@ -886,6 +906,7 @@ public class ResumeRedactionService {
                 for (TextRun run : runs) {
                     String text = run.getText();
                     if (text == null || text.isBlank()) continue;
+                    if (isContactLabelOrIcon(text)) continue;
                     double[] box = run.getBbox();
                     if (box == null || box.length < 4) continue;
 
