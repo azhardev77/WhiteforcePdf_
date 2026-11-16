@@ -389,4 +389,71 @@ class ResumeRedactionTest {
             }
         }
     }
+
+    @Test
+    @DisplayName("Phone label (e.g. 'Phone:') is completely redacted along with phone number across column breaks and gaps while preserving location")
+    void testAdjacentPhoneLabelRedaction() throws Exception {
+        byte[] samplePdf;
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            doc.addPage(page);
+
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                // Header Name
+                cs.beginText();
+                cs.setFont(new org.apache.pdfbox.pdmodel.font.PDType1Font(
+                        org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName.HELVETICA_BOLD), 16);
+                cs.newLineAtOffset(50, 750);
+                cs.showText("Rahul Sharma");
+                cs.endText();
+
+                // Title
+                cs.beginText();
+                cs.setFont(new org.apache.pdfbox.pdmodel.font.PDType1Font(
+                        org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName.HELVETICA), 12);
+                cs.newLineAtOffset(50, 730);
+                cs.showText("Junior / Fresher PHP Laravel Developer");
+                cs.endText();
+
+                // Contact line with separate showText runs placing "Phone:" near middle (X=230) and number (X=268)
+                cs.beginText();
+                cs.setFont(new org.apache.pdfbox.pdmodel.font.PDType1Font(
+                        org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName.HELVETICA), 11);
+                cs.newLineAtOffset(50, 710);
+                cs.showText("rahul.laravel.dev@gmail.com");
+                cs.newLineAtOffset(180, 0); // X = 230
+                cs.showText("Phone: ");
+                cs.showText("+91 98765 43210");
+                cs.newLineAtOffset(180, 0); // X = 410
+                cs.showText("Location: Bangalore, India (Open to Relocation)");
+                cs.endText();
+            }
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            doc.save(baos);
+            samplePdf = baos.toByteArray();
+        }
+
+        byte[] redactedBytes = resumeRedactionService.redactResume(samplePdf);
+        assertThat(redactedBytes).isNotNull();
+
+        try (PDDocument doc = Loader.loadPDF(redactedBytes)) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extracted = stripper.getText(doc);
+
+            // Assert email and phone are redacted
+            assertThat(extracted).doesNotContain("rahul.laravel.dev@gmail.com");
+            assertThat(extracted).doesNotContain("+91 98765 43210");
+            assertThat(extracted).doesNotContain("98765 43210");
+
+            // Assert 'Phone:' label is completely removed and does NOT remain orphaned
+            assertThat(extracted).doesNotContain("Phone:");
+            assertThat(extracted).doesNotContain("Phone");
+
+            // Assert location text and candidate headers are 100% preserved
+            assertThat(extracted).contains("Rahul Sharma");
+            assertThat(extracted).contains("Junior / Fresher PHP Laravel Developer");
+            assertThat(extracted).contains("Location: Bangalore, India (Open to Relocation)");
+        }
+    }
 }

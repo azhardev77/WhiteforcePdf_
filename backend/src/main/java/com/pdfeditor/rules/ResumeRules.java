@@ -132,8 +132,8 @@ public class ResumeRules implements RuleSet {
                         continue;
                     }
 
-                    // Handle adjacent sibling icon boxes (e.g. phone/mail icons directly preceding this match)
-                    handleAdjacentSiblingIcons(lineBoxes, rawBlocks, tb);
+                    // Handle adjacent sibling labels and icon boxes (e.g. "Phone:", "Email:", or contact icons)
+                    String prependedLabel = handleAdjacentSiblingLabelsAndIcons(lineBoxes, rawBlocks, textBlocks, tb, span.getType());
 
                     // Compute overall bounding box encompassing all line boxes
                     double minX = Double.MAX_VALUE;
@@ -149,7 +149,10 @@ public class ResumeRules implements RuleSet {
                     }
 
                     double[] overallBbox = new double[]{minX, minY, Math.max(0, maxX - minX), Math.max(0, maxY - minY)};
-                    allMatches.add(new Match(pageNumber, span.getType(), span.getMatch(), overallBbox, lineBoxes));
+                    String fullMatchedText = (prependedLabel != null && !prependedLabel.isBlank())
+                            ? (prependedLabel + " " + span.getMatch())
+                            : span.getMatch();
+                    allMatches.add(new Match(pageNumber, span.getType(), fullMatchedText, overallBbox, lineBoxes));
                 }
             }
         }
@@ -280,8 +283,27 @@ public class ResumeRules implements RuleSet {
         return result;
     }
 
-    private void handleAdjacentSiblingIcons(List<double[]> lineBoxes, List<Block> pageBlocks, TextBlockWrapper currentTb) {
-        if (lineBoxes.isEmpty()) return;
+    private static final java.util.regex.Pattern PHONE_SIBLING_LABEL_REGEX = java.util.regex.Pattern.compile(
+            "(?i)^\\s*(?:[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}\\u260E\\u2709\\uF095\\uF0E0✉☎✆📞📧📱📍]\\s*)+(?:(?:phone|tel|telephone|mobile|mob|cell|call|contact|fa-phone|fa-mobile)\\s*[:.-]?\\s*)?$" +
+            "|(?i)^\\s*(?:phone|tel|telephone|mobile|mob|cell|call|contact|fa-phone|fa-mobile)\\s*[:.-]?\\s*$"
+    );
+
+    private static final java.util.regex.Pattern EMAIL_SIBLING_LABEL_REGEX = java.util.regex.Pattern.compile(
+            "(?i)^\\s*(?:[\\u2600-\\u27BF\\uE000-\\uF8FF\\x{1F300}-\\x{1F9FF}\\u260E\\u2709\\uF095\\uF0E0✉☎✆📞📧📱📍]\\s*)+(?:(?:email|e-mail|envelope|fa-envelope|fa-envelope-o)?\\s*[:.-]?\\s*)?$" +
+            "|(?i)^\\s*(?:email|e-mail|envelope|fa-envelope|fa-envelope-o)\\s*[:.-]?\\s*$"
+    );
+
+    private String getBlockText(TextBlockWrapper tb) {
+        if (tb == null || tb.runs == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (TextRun r : tb.runs) {
+            if (r.getText() != null) sb.append(r.getText());
+        }
+        return sb.toString();
+    }
+
+    private String handleAdjacentSiblingLabelsAndIcons(List<double[]> lineBoxes, List<Block> pageBlocks, List<TextBlockWrapper> textBlocks, TextBlockWrapper currentTb, String matchType) {
+        if (lineBoxes.isEmpty()) return "";
 
         // Find the leftmost box
         double[] firstBox = lineBoxes.get(0);
@@ -300,7 +322,48 @@ public class ResumeRules implements RuleSet {
         double expandedX = origX;
         double boxTop = origY;
         double boxBottom = origY + origH;
+        StringBuilder prependedText = new StringBuilder();
 
+        // 1. First, check if there is an adjacent sibling text block containing a contact label (e.g. "Phone:", "Email:")
+        if (textBlocks != null) {
+            for (TextBlockWrapper siblingTb : textBlocks) {
+                if (siblingTb == currentTb || siblingTb.sourceBlock == currentTb.sourceBlock) continue;
+                double[] sibBbox = siblingTb.blockBbox;
+                if (sibBbox == null || sibBbox.length < 4) continue;
+
+                double sibX = sibBbox[0];
+                double sibY = sibBbox[1];
+                double sibW = sibBbox[2];
+                double sibH = sibBbox[3];
+                double sibTop = sibY;
+                double sibBottom = sibY + sibH;
+
+                double yOverlap = Math.max(0, Math.min(boxBottom, sibBottom) - Math.max(boxTop, sibTop));
+                if (yOverlap > 2.0) {
+                    double sibRight = sibX + sibW;
+                    // Sibling is to the left, within 70pt distance
+                    if (sibRight <= origX && (origX - sibRight) <= 70.0) {
+                        String sibText = getBlockText(siblingTb);
+                        boolean isLabel = false;
+                        if ("phone".equalsIgnoreCase(matchType) && PHONE_SIBLING_LABEL_REGEX.matcher(sibText).matches()) {
+                            isLabel = true;
+                        } else if ("email".equalsIgnoreCase(matchType) && EMAIL_SIBLING_LABEL_REGEX.matcher(sibText).matches()) {
+                            isLabel = true;
+                        }
+
+                        if (isLabel) {
+                            expandedX = Math.min(expandedX, sibX);
+                            lineBoxes.add(sibBbox.clone());
+                            if (prependedText.length() > 0) prependedText.append(" ");
+                            prependedText.append(sibText.trim());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Next, check image icons (or further glyph icons) directly preceding expandedX
+        double iconAnchorX = expandedX;
         for (Block sibling : pageBlocks) {
             if (sibling == currentTb.sourceBlock) continue;
             double[] sibBbox = sibling.getBbox();
@@ -315,13 +378,14 @@ public class ResumeRules implements RuleSet {
 
             // Check vertical overlap on same horizontal band
             double yOverlap = Math.max(0, Math.min(boxBottom, sibBottom) - Math.max(boxTop, sibTop));
-            if (yOverlap > 3) {
+            if (yOverlap > 2.0) {
                 double sibRight = sibX + sibW;
                 // If sibling is an image or icon to the left within padLeft distance
-                if (sibling instanceof ImageBlock && sibRight <= origX && (origX - sibRight) <= padLeft) {
+                if (sibling instanceof ImageBlock && sibRight <= iconAnchorX && (iconAnchorX - sibRight) <= padLeft) {
                     expandedX = Math.min(expandedX, sibX);
-                } else if (sibRight <= origX && sibRight > expandedX) {
-                    // Non-redacted text block to the left clamps expansion
+                    lineBoxes.add(sibBbox.clone());
+                } else if (sibRight <= iconAnchorX && sibRight > expandedX) {
+                    // Non-redacted, non-label text block to the left clamps expansion
                     expandedX = Math.min(origX, sibRight + 2.0);
                 }
             }
@@ -331,5 +395,7 @@ public class ResumeRules implements RuleSet {
             firstBox[2] = origW + (origX - expandedX);
             firstBox[0] = expandedX;
         }
+
+        return prependedText.toString();
     }
 }

@@ -31,6 +31,15 @@ postman/
 .postman/
 
 # Local AI state & scratch verification outputs
+.env
+.env.*
+.agent/
+.agents/
+.gsd/
+graphify-out/
+AGENTS.md
+GSD-STYLE.md
+PROJECT_RULES.md
 .gemini/
 /api_output.json
 /r.json

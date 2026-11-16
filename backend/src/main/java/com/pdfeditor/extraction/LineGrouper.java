@@ -156,9 +156,9 @@ public class LineGrouper {
 
                 boolean gapExceeded = (gap >= gapThreshold);
                 // Strictly prevent cross-column line merging:
-                // Glyphs on the left of the divider (x < X_DIVIDER) and glyphs on the right of the divider (x >= X_DIVIDER - 5.0)
-                // MUST NEVER be merged into the same Line object, regardless of how small the gap is.
-                boolean crossesDivider = (prev.getX() < X_DIVIDER && word.getX() >= (X_DIVIDER - 5.0));
+                // Only split across divider if there is at least an inter-column gutter (gap >= 8.0)
+                // and the previous word ended before the divider plane.
+                boolean crossesDivider = (gap >= 8.0) && (prevRight < X_DIVIDER) && (prev.getX() < X_DIVIDER && word.getX() >= (X_DIVIDER - 5.0));
 
                 double fontDiff = Math.abs(word.getFontSize() - prev.getFontSize());
                 double minFont = Math.min(word.getFontSize(), prev.getFontSize());
